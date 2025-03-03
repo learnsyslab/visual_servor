@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+
+<!-- Launch the Realsense RGBD camera. -->
+<launch>
+  <include file="$(find realsense2_camera)/launch/rs_camera.launch">
+    <!-- Needed to get depth camera working -->
+    <!-- <arg name="initial_reset" default="true"/> -->
+
+    <arg name="device_type" default="l515"/>
+
+    <arg name="align_depth" default="true"/>
+
+    <arg name="color_fps" default="6"/>
+    <arg name="color_width" default="1280"/>
+    <arg name="color_height" default="720"/>
+  </include>
+</launch>

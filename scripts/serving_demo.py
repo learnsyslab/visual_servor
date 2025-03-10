@@ -85,6 +85,12 @@ class Person:
         return False
 
 
+def compute_range_limits(angles, angle_limit=np.pi / 2, front_limit=1, side_limit=0.5):
+    a = (side_limit - front_limit) / (np.cos(angle_limit) - 1)
+    b = front_limit - a
+    return a * np.cos(angles) + b
+
+
 class ServingNode:
     def __init__(self):
         self.det_model = YOLO("yolo11s.pt")
@@ -117,12 +123,17 @@ class ServingNode:
         MIN_ANGLE = -np.pi / 4.0
         MAX_ANGLE = np.pi / 4.0
 
-        # TODO replace with a different shape
         n = len(scan.ranges)
         ranges = np.array(scan.ranges)
         angles = np.array([scan.angle_min + i * scan.angle_increment for i in range(n)])
+        range_limits = compute_range_limits(
+            angles,
+            front_limit=MAX_DIST,
+            side_limit=0.5 * MAX_DIST,
+            angle_limit=MAX_ANGLE,
+        )
         valid_angles = (angles >= MIN_ANGLE) & (angles <= MAX_ANGLE)
-        valid_ranges = (ranges >= scan.range_min) & (ranges <= MAX_DIST)
+        valid_ranges = (ranges >= scan.range_min) & (ranges <= range_limits)
         valid = valid_angles & valid_ranges
         self.safe_to_move = not np.any(valid)
 

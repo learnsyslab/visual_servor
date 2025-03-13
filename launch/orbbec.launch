@@ -3,9 +3,10 @@
 <!-- Launch the Orbbec Femto Bolt RGBD camera. -->
 <launch>
   <include file="$(find orbbec_camera)/launch/femto_bolt.launch">
-    <arg name="depth_registration" default="true"/>
-    <arg name="enable_colored_point_cloud" default="true"/>
-    <arg name="ordered_pc" default="true"/>
+    <!-- <arg name="depth_registration" default="true"/> -->
+    <!-- <arg name="enable_colored_point_cloud" default="true"/> -->
+    <!-- <arg name="ordered_pc" default="true"/> -->
+    <arg name="enable_depth" default="false"/>
     <arg name="color_width" default="1280"/>
     <arg name="color_height" default="720"/>
   </include>

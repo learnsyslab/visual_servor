@@ -22,7 +22,8 @@ MODEL_RGB_IMAGE_SIZE = (MODEL_RGB_IMAGE_WIDTH, MODEL_RGB_IMAGE_HEIGHT)
 
 RATE = 10  # Hz
 ANG_VEL_MAX = 0.1
-LIN_VEL_MAX = 0.1
+ANG_ACC = 0.1
+LIN_VEL_MAX = 0.2
 LIN_ACC = 0.1
 KPT_CONFIDENCE = 0.75
 FILTER_WEIGHT = 0.25
@@ -30,13 +31,9 @@ FILTER_WEIGHT = 0.25
 # trajectory parameters
 CONVERGENCE_TOL = 1e-2
 MIN_DURATION = 2.0  # seconds
-HOME_POSE = np.array([0, 0, 0])  # TODO
+HOME_POSE = np.array([-2, -1, -np.pi / 4])
 
-# TODO basically the linear target can change depending on if hand is up, but
-# angular should always keep trying to track you
-# TODO how to handle multiple people?
-# - need to track hand-up persistence
-
+SERVING_TIME = 10
 
 # TODO maybe have difference range fields for different motions
 
@@ -45,42 +42,64 @@ class SystemMode(Enum):
     HOME = 0
     MOVING_HOME = 1
     FOLLOWING_TARGET = 2
-    UNSAFE = 3
+    SERVING = 3
 
 
 class Person:
     def __init__(self, id, center, keypoints):
         self.id = id
         self.keypoints = keypoints
+
+        # a default center value must be provided, but we will track the head
+        # if possible
         self.center = center
+        head_pos = self._compute_head_position()
+        if head_pos is not None:
+            self.center = head_pos
 
-    def update(self, center, keypoints):
-        # only update keypoints with sufficient confidence score
-        # TODO: this only works well if we have a decent confidence score at
-        # some point
+    def _compute_head_position(self):
+        head_kpts = self.keypoints[:5, :]
+        head_mask = head_kpts[:, 2] > KPT_CONFIDENCE
+        if not np.any(head_mask):
+            return None
+        return np.mean(head_kpts[head_mask, :2], axis=0)
+
+    def update(self, keypoints):
+        # only the confident positions are updated, but all the confidences are
+        # updated
         mask = keypoints[:, 2] >= KPT_CONFIDENCE
-        self.keypoints[mask, :] = (
-            FILTER_WEIGHT * self.keypoints[mask, :]
-            + (1 - FILTER_WEIGHT) * keypoints[mask, :]
+        w1 = FILTER_WEIGHT
+        w2 = 1 - FILTER_WEIGHT
+        self.keypoints[mask, :2] = (
+            w1 * self.keypoints[mask, :2] + w2 * keypoints[mask, :2]
         )
+        self.keypoints[:, 2] = w1 * self.keypoints[:, 2] + w2 * keypoints[:, 2]
 
+        # update center (of the head)
+        center = self._compute_head_position()
+        if center is None:
+            return
         self.center = FILTER_WEIGHT * self.center + (1 - FILTER_WEIGHT) * center
 
     def has_hand_raised(self):
         """Check if the person has their hand raised above the shoulder."""
-        left_shoulder = self.keypoints[5, :]
-        right_shoulder = self.keypoints[6, :]
+        # left_shoulder = self.keypoints[5, :]
+        # right_shoulder = self.keypoints[6, :]
         left_wrist = self.keypoints[9, :]
         right_wrist = self.keypoints[10, :]
 
-        # recall that this is in image coordinates, so y is flipped
-        if left_wrist[2] > KPT_CONFIDENCE and left_shoulder[2] > KPT_CONFIDENCE:
-            if left_wrist[1] < left_shoulder[1]:
-                return True
+        head_kpts = self.keypoints[:5, :]
+        head_mask = head_kpts[:, 2] > KPT_CONFIDENCE
+        if not np.any(head_mask):
+            return False
+        head_height = np.min(head_kpts[head_mask, 1])
 
-        if right_wrist[2] > KPT_CONFIDENCE and right_shoulder[2] > KPT_CONFIDENCE:
-            if right_wrist[1] < right_shoulder[1]:
-                return True
+        # recall that this is in image coordinates, so y is flipped
+        if left_wrist[2] > KPT_CONFIDENCE and left_wrist[1] < head_height:
+            return True
+
+        if right_wrist[2] > KPT_CONFIDENCE and right_wrist[1] < head_height:
+            return True
 
         return False
 
@@ -167,45 +186,55 @@ class ServingNode:
 
         results = self.model.track(self.rgb_image, verbose=False)
         boxes = results[0].boxes
+
+        # if the detector is uncertain the person won't be tracked right away,
+        # so we ignore for now
+        if not boxes.is_track:
+            return
+
         track_ids = boxes.id.int().cpu().tolist()
         keypoints = results[0].keypoints.data.cpu().numpy()
 
         # remove people that are no longer detected
-        for id in self.people.keys():
+        # note conversion to list because we cannot delete keys while iterating
+        for id in list(self.people.keys()):
             if id not in track_ids:
                 del self.people[id]
 
         # add new people or update existing people
         for i, id in enumerate(track_ids):
-            center = boxes.xywh[i].cpu().numpy()[:2]
-
             if id not in self.people:
+                # default center is centered in x and 3/4 up in y
+                x, y, w, h = boxes.xywh[i].cpu().numpy()
+                center = np.array([x, y - 0.25 * h])
                 self.people[id] = Person(id=id, center=center, keypoints=keypoints[i])
             else:
-                self.people[id].update(center=center, keypoints=keypoints[i])
+                self.people[id].update(keypoints=keypoints[i])
 
         # check for raised hand
         # current target still valid: it exists and still has a raised hand
         if self.target_id is not None and self.target_id in self.people:
             if self.people[self.target_id].has_hand_raised():
-                self.target = self.people[self.target_id].center
                 return
 
         # target is invalid: check if a new target exists
         for id, person in self.people.items():
             if person.has_hand_raised():
                 self.target_id = id
-                self.target = person.center
                 return
 
         # otherwise we have no target
-        self.target = None
+        self.target_id = None
+
+    def has_target(self):
+        return self.target_id is not None
 
     def compute_angular_error(self):
-        if self.target is None:
+        if self.target_id is None:
             error = 0
         else:
-            error = MODEL_RGB_IMAGE_WIDTH / 2 - self.target[0]
+            target = self.people[self.target_id].center
+            error = MODEL_RGB_IMAGE_WIDTH / 2 - target[0]
 
             # normalize to [-1, 1]
             error /= MODEL_RGB_IMAGE_WIDTH / 2
@@ -213,13 +242,17 @@ class ServingNode:
 
     def annotated_image(self):
         annotator = Annotator(self.rgb_image)
-        if self.keypoints is not None:
-            annotator.kpts(self.keypoints)
+        for person in self.people.values():
+            annotator.kpts(person.keypoints)
         return annotator.result()
 
 
 def change_velocity(v, vd, max_a, dt):
     """Accelerate to a desired velocity, with limits."""
+    scalar = np.isscalar(v)
+    v = np.atleast_1d(v)
+    vd = np.atleast_1d(vd)
+
     error = vd - v
     new_v = v + dt * np.sign(error) * max_a
     new_error = vd - new_v
@@ -228,6 +261,8 @@ def change_velocity(v, vd, max_a, dt):
 
     v = new_v
     v[crossed_vd] = vd[crossed_vd]
+    if scalar:
+        return v[0]
     return v
 
 
@@ -236,7 +271,7 @@ def decelerate(v, max_a, dt):
 
 
 def at_home(q):
-    return np.linalg.norm(home - robot.q) <= CONVERGENCE_TOL
+    return np.linalg.norm(HOME_POSE[:2] - q[:2]) <= CONVERGENCE_TOL
 
 
 def main():
@@ -267,9 +302,9 @@ def main():
     print("...robot ready.")
 
     mode = SystemMode.HOME
-    trajectory = None
     lin_vel = np.zeros(2)
     ang_vel = 0
+    serving_start = 0
 
     t0 = rospy.Time.now().to_sec()
     while not rospy.is_shutdown():
@@ -283,61 +318,74 @@ def main():
                 break
 
         # select current mode
-        if not node.safe_to_move:
-            mode = SystemMode.UNSAFE
-        elif node.target is not None:
+        if mode == SystemMode.SERVING and t - serving_start <= SERVING_TIME:
+            # stay in serving mode until time is up
+            pass
+        elif node.has_target():
             mode = SystemMode.FOLLOWING_TARGET
         elif at_home(q):
             mode = SystemMode.HOME
         else:
-            mode = SystemMode.MOVING_HOME
-
-        # if not already going home, reset trajectory
-        if mode != SystemMode.MOVING_HOME:
-            trajectory = None
+            # don't switch to moving home when already at home: this can be
+            # triggered by small amounts of noise in the position estimate
+            if mode != SystemMode.HOME:
+                mode = SystemMode.MOVING_HOME
+        print(mode)
 
         # move based on mode
-        if mode == SystemMode.UNSAFE:
-            # decelerate to zero velocity as fast as possible
-            lin_vel = decelerate(lin_vel, LIN_ACC, dt)
-            ang_vel = 0
-        elif mode == SystemMode.HOME:
-            lin_vel = np.zeros(2)
-            ang_vel = 0
+        if mode == SystemMode.HOME or mode == SystemMode.SERVING:
+            lin_vel_des = np.zeros(2)
+            ang_vel_des = 0
         elif mode == SystemMode.MOVING_HOME:
-            # generate a trajectory to home pose
-            if trajectory is None:
-                trajectory = mm.PointToPointTrajectory.quintic(
-                    q, HOME_POSE, LIN_VEL_MAX, LIN_ACC, min_duration=MIN_DURATION
-                )
-
-            # follow it (until another state is triggered)
-            qd, vd, _ = trajectory.sample(t)
-            error = qd - q
-            cmd_vel = Kp * error + vd
+            error = HOME_POSE - q
+            error[2] = mm.wrap_to_pi(error[2])
+            vd = Kp * error
 
             # rotate into the body frame
             C_bw = rotz(-q[2])
-            cmd_vel = C_bw @ cmd_vel
+            vd = C_bw @ vd
+
+            lin_vel_des = vd[:2]
+            ang_vel_des = 0  # keep current angle
 
         elif mode == SystemMode.FOLLOWING_TARGET:
             # move forward
             # TODO could adjust this based on angular error
-            lin_vel = change_velocity(lin_vel, [LIN_VEL_MAX, 0], LIN_ACC, dt)
+            lin_vel_des = np.array([LIN_VEL_MAX, 0])
 
-            # TODO apply acceleration as well
             ang_err = node.compute_angular_error()
-            ang_vel = Kω * ang_err
+            ang_vel_des = Kω * ang_err
         else:
             raise ValueError(f"Invalid mode: {mode}")
 
+        if not node.safe_to_move:
+            # stop linear motion if it is in forward direction
+            if lin_vel_des[0] >= 0:
+                lin_vel_des = np.zeros(2)
+            ang_vel_des = 0
+
+            # stay still to serve
+            if mode == SystemMode.FOLLOWING_TARGET:
+                print("start serve")
+                lin_vel_des = np.zeros(2)
+                ang_vel_des = 0
+                serving_start = t
+                mode = SystemMode.SERVING
+
+        # accelerate toward desired velocity
+        lin_vel = change_velocity(lin_vel, lin_vel_des, LIN_ACC, dt)
+        ang_vel = change_velocity(ang_vel, ang_vel_des, ANG_ACC, dt)
+
         # enforce velocity limits
-        lin_vel = np.clip(lin_vel, -LIN_VEL_MAX, LIN_VEL_MAX)
+        lin_vel_norm = np.linalg.norm(lin_vel)
+        if lin_vel_norm > LIN_VEL_MAX:
+            lin_vel = LIN_VEL_MAX * lin_vel / lin_vel_norm
         ang_vel = np.clip(ang_vel, -ANG_VEL_MAX, ANG_VEL_MAX)
 
         # send command to the robot
-        cmd_vel = lin_vel.append(ang_vel)
+        cmd_vel = np.append(lin_vel, ang_vel)
         if args.dry_run:
+            print(f"q = {q}")
             print(f"cmd_vel = {cmd_vel}")
         else:
             robot.publish_cmd_vel(cmd_vel, bodyframe=True)

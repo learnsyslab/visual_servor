@@ -16,26 +16,43 @@ import mobile_manipulation_central as mm
 
 import IPython
 
+# TODO maybe have difference range fields for different motions
+
 MODEL_RGB_IMAGE_WIDTH = 640
 MODEL_RGB_IMAGE_HEIGHT = 480
 MODEL_RGB_IMAGE_SIZE = (MODEL_RGB_IMAGE_WIDTH, MODEL_RGB_IMAGE_HEIGHT)
 
-RATE = 10  # Hz
-ANG_VEL_MAX = 0.1
-ANG_ACC = 0.1
-LIN_VEL_MAX = 0.2
-LIN_ACC = 0.1
+# control rate (Hz)
+RATE = 10
+
+# base motion limits
+ANG_VEL_MAX = 0.2
+ANG_ACC = 0.15
+LIN_VEL_MAX = 0.3
+LIN_ACC = 0.15
+
+# threshold for detected keypoint confidence
 KPT_CONFIDENCE = 0.75
+
+# detection confidence
+DET_CONFIDENCE = 0.5
+
+# weight for exponential filtering of the image detections
 FILTER_WEIGHT = 0.25
 
-# trajectory parameters
+# home pose
 CONVERGENCE_TOL = 1e-2
-MIN_DURATION = 2.0  # seconds
 HOME_POSE = np.array([-2, -1, -np.pi / 4])
 
-SERVING_TIME = 10
+# time to wait when serving someone
+SERVING_TIME = 6
 
-# TODO maybe have difference range fields for different motions
+# arm joint limits
+Q_ELBOW_MIN = np.deg2rad(75)
+Q_ELBOW_MAX = np.deg2rad(120)
+Q_WRIST_MIN = 0
+Q_WRIST_MAX = np.deg2rad(45)
+V_UP_MAX = 0.1  # rad/s  # TODO: tune
 
 
 class SystemMode(Enum):
@@ -57,6 +74,8 @@ class Person:
         if head_pos is not None:
             self.center = head_pos
 
+        self.box_xyxy = np.zeros(4)
+
     def _compute_head_position(self):
         head_kpts = self.keypoints[:5, :]
         head_mask = head_kpts[:, 2] > KPT_CONFIDENCE
@@ -64,10 +83,18 @@ class Person:
             return None
         return np.mean(head_kpts[head_mask, :2], axis=0)
 
+    def _in_box(self, keypoints):
+        return (
+            (keypoints[:, 0] >= self.box_xyxy[0])
+            & (keypoints[:, 0] <= self.box_xyxy[2])
+            & (keypoints[:, 1] >= self.box_xyxy[1])
+            & (keypoints[:, 1] <= self.box_xyxy[3])
+        )
+
     def update(self, keypoints):
         # only the confident positions are updated, but all the confidences are
         # updated
-        mask = keypoints[:, 2] >= KPT_CONFIDENCE
+        mask = keypoints[:, 2] >= KPT_CONFIDENCE  #  & self._in_box(keypoints)
         w1 = FILTER_WEIGHT
         w2 = 1 - FILTER_WEIGHT
         self.keypoints[mask, :2] = (
@@ -79,7 +106,7 @@ class Person:
         center = self._compute_head_position()
         if center is None:
             return
-        self.center = FILTER_WEIGHT * self.center + (1 - FILTER_WEIGHT) * center
+        self.center = w1 * self.center + w2 * center
 
     def has_hand_raised(self):
         """Check if the person has their hand raised above the shoulder."""
@@ -138,7 +165,7 @@ class ServingNode:
 
     def scan_cb(self, scan):
         """Get ranges and angles from a scan."""
-        MAX_DIST = 1.0
+        MAX_DIST = 1.25
         MIN_ANGLE = -np.pi / 4.0
         MAX_ANGLE = np.pi / 4.0
 
@@ -148,7 +175,7 @@ class ServingNode:
         range_limits = compute_range_limits(
             angles,
             front_limit=MAX_DIST,
-            side_limit=0.5 * MAX_DIST,
+            side_limit=0.6*MAX_DIST,
             angle_limit=MAX_ANGLE,
         )
         valid_angles = (angles >= MIN_ANGLE) & (angles <= MAX_ANGLE)
@@ -184,7 +211,7 @@ class ServingNode:
         if len(detections[0].boxes.cls) == 0:
             return
 
-        results = self.model.track(self.rgb_image, verbose=False)
+        results = self.model.track(self.rgb_image, conf=DET_CONFIDENCE, verbose=False)
         boxes = results[0].boxes
 
         # if the detector is uncertain the person won't be tracked right away,
@@ -211,6 +238,9 @@ class ServingNode:
             else:
                 self.people[id].update(keypoints=keypoints[i])
 
+            self.people[id].box_xyxy = boxes.xyxy[i].cpu().numpy()
+            # print(boxes.conf[i].cpu().numpy())
+
         # check for raised hand
         # current target still valid: it exists and still has a raised hand
         if self.target_id is not None and self.target_id in self.people:
@@ -231,19 +261,36 @@ class ServingNode:
 
     def compute_angular_error(self):
         if self.target_id is None:
-            error = 0
-        else:
-            target = self.people[self.target_id].center
-            error = MODEL_RGB_IMAGE_WIDTH / 2 - target[0]
+            return 0
 
-            # normalize to [-1, 1]
-            error /= MODEL_RGB_IMAGE_WIDTH / 2
+        target = self.people[self.target_id].center
+        w2 = MODEL_RGB_IMAGE_WIDTH / 2
+        error = w2 - target[0]
+
+        # normalize to [-1, 1]
+        error /= w2
+        return error
+
+    def compute_height_error(self):
+        if self.target_id is None:
+            return 0
+
+        target = self.people[self.target_id].center
+        h2 = MODEL_RGB_IMAGE_HEIGHT / 2
+        error = h2 - target[1]
+
+        # normalize to [-1, 1]
+        error /= h2
         return error
 
     def annotated_image(self):
         annotator = Annotator(self.rgb_image)
-        for person in self.people.values():
+
+        # (shallow) copy to avoid changing dict size during iteration
+        people = self.people.copy()
+        for track_id, person in people.items():
             annotator.kpts(person.keypoints)
+            annotator.box_label(person.box_xyxy, str(track_id))
         return annotator.result()
 
 
@@ -267,11 +314,54 @@ def change_velocity(v, vd, max_a, dt):
 
 
 def decelerate(v, max_a, dt):
+    """Decelerate to zero velocity subject to maximum acceleration."""
     return change_velocity(v=v, vd=np.zeros_like(v), max_a=max_a, dt=dt)
 
 
 def at_home(q):
+    """Returns ``True`` if the robot is at the home position, ``False`` otherwise."""
     return np.linalg.norm(HOME_POSE[:2] - q[:2]) <= CONVERGENCE_TOL
+
+
+def servo_arm_up(q, vz, dt):
+    """Servo the EE up using the arm.
+
+    Parameters
+    ----------
+    q : np.array, shape (6,)
+        The arm joint angles.
+    vz : float
+        The vertical velocity.
+    dt : float
+        The control timestep.
+
+    Returns
+    -------
+    : np.array, shape (6,)
+        The commanded arm joint velocity.
+    """
+    assert q.shape == (6,)
+    elbow_idx = 2
+    wrist_idx = 3
+
+    # limit the velocity
+    vz = np.clip(vz, -V_UP_MAX, V_UP_MAX)
+
+    cmd_vel = np.zeros_like(q)
+    cmd_vel[elbow_idx] = -vz
+    cmd_vel[wrist_idx] = vz
+
+    # don't move if bounds would be violated
+    q_next = q + dt * cmd_vel
+    if (
+        q_next[elbow_idx] <= Q_ELBOW_MIN
+        or q_next[elbow_idx] >= Q_ELBOW_MAX
+        or q_next[wrist_idx] <= Q_WRIST_MIN
+        or q_next[wrist_idx] >= Q_WRIST_MAX
+    ):
+        return np.zeros_like(cmd_vel)
+
+    return cmd_vel
 
 
 def main():
@@ -282,6 +372,7 @@ def main():
     parser.add_argument(
         "--display", action="store_true", help="Display the annotated image."
     )
+    parser.add_argument("--arm-only", action="store_true", help="Only move the arm.")
     args = parser.parse_args()
 
     rospy.init_node("serving_node", disable_signals=True)
@@ -291,8 +382,9 @@ def main():
     dt = 1.0 / RATE
     Kω = 0.5  # angular gain
     Kp = 1.0  # linear gain
+    Kz = 0.5  # vertical gain
 
-    robot = mm.RidgebackROSInterface()
+    robot = mm.MobileManipulatorROSInterface()
     signal_handler = mm.RobotSignalHandler(robot, args.dry_run)
 
     # wait until robot feedback has been received
@@ -333,11 +425,12 @@ def main():
         print(mode)
 
         # move based on mode
+        vz_des = 0
         if mode == SystemMode.HOME or mode == SystemMode.SERVING:
             lin_vel_des = np.zeros(2)
             ang_vel_des = 0
         elif mode == SystemMode.MOVING_HOME:
-            error = HOME_POSE - q
+            error = HOME_POSE[:3] - q[:3]
             error[2] = mm.wrap_to_pi(error[2])
             vd = Kp * error
 
@@ -349,12 +442,15 @@ def main():
             ang_vel_des = 0  # keep current angle
 
         elif mode == SystemMode.FOLLOWING_TARGET:
-            # move forward
-            # TODO could adjust this based on angular error
-            lin_vel_des = np.array([LIN_VEL_MAX, 0])
-
+            # base motion
             ang_err = node.compute_angular_error()
+            vx = LIN_VEL_MAX * (1 - np.abs(ang_err))
+            lin_vel_des = np.array([vx, 0])
             ang_vel_des = Kω * ang_err
+
+            # arm motion
+            height_err = node.compute_height_error()
+            vz_des = Kz * height_err
         else:
             raise ValueError(f"Invalid mode: {mode}")
 
@@ -382,8 +478,19 @@ def main():
             lin_vel = LIN_VEL_MAX * lin_vel / lin_vel_norm
         ang_vel = np.clip(ang_vel, -ANG_VEL_MAX, ANG_VEL_MAX)
 
+        # build the full command
+        base_cmd_vel = np.append(lin_vel, ang_vel)
+        if args.arm_only:
+            base_cmd_vel = np.zeros(3)
+
+        arm_cmd_vel = servo_arm_up(q[3:], vz_des, dt)
+        cmd_vel = np.concatenate((base_cmd_vel, arm_cmd_vel))
+
+        print(f"vz_des = {vz_des}")
+        if node.has_target():
+            print(f"target = {node.people[node.target_id].center}")
+
         # send command to the robot
-        cmd_vel = np.append(lin_vel, ang_vel)
         if args.dry_run:
             print(f"q = {q}")
             print(f"cmd_vel = {cmd_vel}")

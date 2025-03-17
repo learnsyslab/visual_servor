@@ -5,8 +5,8 @@ import matplotlib.pyplot as plt
 
 ANGLE_LIMIT = np.pi / 4
 
-SIDE_LIMIT = 0.5
-FRONT_LIMIT = 1
+SIDE_LIMIT = 0.75
+FRONT_LIMIT = 1.25
 
 angles = np.linspace(-ANGLE_LIMIT, ANGLE_LIMIT, 1000)
 ranges1 = np.ones_like(angles)

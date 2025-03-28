@@ -11,3 +11,6 @@ with:
 ```
 pip install ultralytics
 ```
+
+### Resources
+* <https://robodev.blog/hand-gesture-recognition-in-ros>

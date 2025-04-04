@@ -7,10 +7,12 @@ from ultralytics import YOLO
 from ultralytics.utils.plotting import Annotator
 import cv2
 import rospy
+import rospkg
 from sensor_msgs.msg import Image, PointCloud2, LaserScan
 from cv_bridge import CvBridge
 import sensor_msgs.point_cloud2 as pc2
 import numpy as np
+import serving_demo as sd
 
 import mobile_manipulation_central as mm
 
@@ -23,11 +25,14 @@ MODEL_RGB_IMAGE_HEIGHT = 480
 MODEL_RGB_IMAGE_SIZE = (MODEL_RGB_IMAGE_WIDTH, MODEL_RGB_IMAGE_HEIGHT)
 
 # control rate (Hz)
-RATE = 10
+RATE = 100
+
+# only display a new image after this much time has elapsed
+DISPLAY_TIME_INTERVAL = 0.1
 
 # base motion limits
 ANG_VEL_MAX = 0.2
-ANG_ACC = 0.15
+ANG_ACC = 0.25
 LIN_VEL_MAX = 0.3
 LIN_ACC = 0.15
 
@@ -40,12 +45,13 @@ DET_CONFIDENCE = 0.5
 # weight for exponential filtering of the image detections
 FILTER_WEIGHT = 0.25
 
-# home pose
+# for home pose
 CONVERGENCE_TOL = 1e-2
-HOME_POSE = np.array([-2, -1, -np.pi / 4])
 
 # time to wait when serving someone
-SERVING_TIME = 6
+STABILIZE_TIME = 10
+WAIT_TIME = 4
+SERVING_TIME = STABILIZE_TIME + WAIT_TIME
 
 # arm joint limits
 Q_ELBOW_MIN = np.deg2rad(75)
@@ -163,6 +169,8 @@ class ServingNode:
 
         self.safe_to_move = False
 
+        self.last_rgb_time = rospy.Time.now().to_sec()
+
     def scan_cb(self, scan):
         """Get ranges and angles from a scan."""
         MAX_DIST = 1.25
@@ -175,7 +183,7 @@ class ServingNode:
         range_limits = compute_range_limits(
             angles,
             front_limit=MAX_DIST,
-            side_limit=0.6*MAX_DIST,
+            side_limit=0.6 * MAX_DIST,
             angle_limit=MAX_ANGLE,
         )
         valid_angles = (angles >= MIN_ANGLE) & (angles <= MAX_ANGLE)
@@ -198,6 +206,10 @@ class ServingNode:
     #     # print(self.target3d)
 
     def rgb_callback(self, msg):
+        t = rospy.Time.now().to_sec()
+        # print(f"rgb time = {t - self.last_rgb_time}")
+        self.last_rgb_time = t
+
         rgb_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
         self.rgb_image = cv2.resize(rgb_image, MODEL_RGB_IMAGE_SIZE)
 
@@ -318,11 +330,6 @@ def decelerate(v, max_a, dt):
     return change_velocity(v=v, vd=np.zeros_like(v), max_a=max_a, dt=dt)
 
 
-def at_home(q):
-    """Returns ``True`` if the robot is at the home position, ``False`` otherwise."""
-    return np.linalg.norm(HOME_POSE[:2] - q[:2]) <= CONVERGENCE_TOL
-
-
 def servo_arm_up(q, vz, dt):
     """Servo the EE up using the arm.
 
@@ -375,6 +382,11 @@ def main():
     parser.add_argument("--arm-only", action="store_true", help="Only move the arm.")
     args = parser.parse_args()
 
+    # load home position
+    rospack = rospkg.RosPack()
+    sd_path = rospack.get_path("serving_demo")
+    home = mm.load_home_position(name="default", path=sd_path + "/config/home.yaml")
+
     rospy.init_node("serving_node", disable_signals=True)
     node = ServingNode()
 
@@ -385,7 +397,11 @@ def main():
     Kz = 0.5  # vertical gain
 
     robot = mm.MobileManipulatorROSInterface()
+    tray = mm.ViconObjectInterface("ThingRoundTray")
     signal_handler = mm.RobotSignalHandler(robot, args.dry_run)
+
+    model = mm.MobileManipulatorKinematics(tool_link_name="ur10_arm_tool0")
+    stabilizer = sd.PendulumStabilizer(gain=0.5, model=model)
 
     # wait until robot feedback has been received
     print("Waiting for robot...")
@@ -396,41 +412,82 @@ def main():
     mode = SystemMode.HOME
     lin_vel = np.zeros(2)
     ang_vel = 0
-    serving_start = 0
+    cmd_vel = np.zeros_like(robot.q)
+    last_display_time = 0
+
+    # time at which the current mode started
+    mode_start_time = 0
 
     t0 = rospy.Time.now().to_sec()
     while not rospy.is_shutdown():
         t = rospy.Time.now().to_sec() - t0
+        mode_t = t - mode_start_time
         q = robot.q
 
-        if args.display and node.rgb_image is not None:
+        if (
+            args.display
+            and node.rgb_image is not None
+            and t - last_display_time >= DISPLAY_TIME_INTERVAL
+        ):
+            last_display_time = t
             image = node.annotated_image()
             cv2.imshow("image", image)
             if cv2.waitKey(1) & 0xFF == ord(" "):
                 break
 
+        prev_mode = mode
+
         # select current mode
-        if mode == SystemMode.SERVING and t - serving_start <= SERVING_TIME:
+        if mode == SystemMode.SERVING and mode_t <= SERVING_TIME:
             # stay in serving mode until time is up
             pass
+        elif mode == SystemMode.FOLLOWING_TARGET and not node.safe_to_move:
+            stabilizer.reset()
+            mode = SystemMode.SERVING
         elif node.has_target():
             mode = SystemMode.FOLLOWING_TARGET
-        elif at_home(q):
+        elif np.linalg.norm(home[:2] - q[:2]) <= CONVERGENCE_TOL:
             mode = SystemMode.HOME
-        else:
+        elif mode != SystemMode.HOME:
             # don't switch to moving home when already at home: this can be
             # triggered by small amounts of noise in the position estimate
-            if mode != SystemMode.HOME:
-                mode = SystemMode.MOVING_HOME
-        print(mode)
+            mode = SystemMode.MOVING_HOME
+
+        # mode switch
+        if mode != prev_mode:
+            mode_start_time = t
+        prev_mode = mode
 
         # move based on mode
-        vz_des = 0
-        if mode == SystemMode.HOME or mode == SystemMode.SERVING:
-            lin_vel_des = np.zeros(2)
-            ang_vel_des = 0
+        lin_vel_des = np.zeros(2)
+        ang_vel_des = 0
+        arm_cmd_vel = np.zeros(6)
+
+        if mode == SystemMode.HOME:
+            arm_q_err = home[3:] - q[3:]
+            if mode_t <= STABILIZE_TIME:
+                x = stabilizer.update(q, tray.position, dt)
+                if x is None:
+                    print("failed to solve QP")
+                    break
+                arm_cmd_vel = x[3:]
+            elif np.linalg.norm(arm_q_err) > CONVERGENCE_TOL:
+                # move arm back to home after stabilizing
+                arm_cmd_vel = Kp @ arm_q_err
+        elif mode == SystemMode.SERVING:
+            # TODO this now includes the deceleration time
+            if not (np.allclose(lin_vel, 0) and np.isclose(ang_vel, 0)):
+                pass
+                # keep pushing back the start time until base has stopped
+                # serving_start = t
+            elif mode_t <= STABILIZE_TIME:
+                x = stabilizer.update(q, tray.position, dt)
+                if x is None:
+                    print("failed to solve QP")
+                    break
+                arm_cmd_vel = x[3:]
         elif mode == SystemMode.MOVING_HOME:
-            error = HOME_POSE[:3] - q[:3]
+            error = home[:3] - q[:3]
             error[2] = mm.wrap_to_pi(error[2])
             vd = Kp * error
 
@@ -451,6 +508,7 @@ def main():
             # arm motion
             height_err = node.compute_height_error()
             vz_des = Kz * height_err
+            arm_cmd_vel = servo_arm_up(q[3:], vz_des, dt)
         else:
             raise ValueError(f"Invalid mode: {mode}")
 
@@ -459,14 +517,6 @@ def main():
             if lin_vel_des[0] >= 0:
                 lin_vel_des = np.zeros(2)
             ang_vel_des = 0
-
-            # stay still to serve
-            if mode == SystemMode.FOLLOWING_TARGET:
-                print("start serve")
-                lin_vel_des = np.zeros(2)
-                ang_vel_des = 0
-                serving_start = t
-                mode = SystemMode.SERVING
 
         # accelerate toward desired velocity
         lin_vel = change_velocity(lin_vel, lin_vel_des, LIN_ACC, dt)
@@ -478,21 +528,17 @@ def main():
             lin_vel = LIN_VEL_MAX * lin_vel / lin_vel_norm
         ang_vel = np.clip(ang_vel, -ANG_VEL_MAX, ANG_VEL_MAX)
 
+        # TODO should I enforce arm velocity limits as well?
+
         # build the full command
         base_cmd_vel = np.append(lin_vel, ang_vel)
         if args.arm_only:
             base_cmd_vel = np.zeros(3)
-
-        arm_cmd_vel = servo_arm_up(q[3:], vz_des, dt)
         cmd_vel = np.concatenate((base_cmd_vel, arm_cmd_vel))
-
-        print(f"vz_des = {vz_des}")
-        if node.has_target():
-            print(f"target = {node.people[node.target_id].center}")
 
         # send command to the robot
         if args.dry_run:
-            print(f"q = {q}")
+            # print(f"q = {q}")
             print(f"cmd_vel = {cmd_vel}")
         else:
             robot.publish_cmd_vel(cmd_vel, bodyframe=True)

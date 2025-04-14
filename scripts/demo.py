@@ -125,6 +125,8 @@ class Person:
         head_mask = head_kpts[:, 2] > KPT_CONFIDENCE
         if not np.any(head_mask):
             return False
+
+        # TODO why use min here?
         head_height = np.min(head_kpts[head_mask, 1])
 
         # recall that this is in image coordinates, so y is flipped

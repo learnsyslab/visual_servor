@@ -15,12 +15,21 @@ MODEL_RGB_IMAGE_WIDTH = 640
 MODEL_RGB_IMAGE_HEIGHT = 480
 MODEL_RGB_IMAGE_SIZE = (MODEL_RGB_IMAGE_WIDTH, MODEL_RGB_IMAGE_HEIGHT)
 
+
 class Person:
-    def __init__(self, image, contours):
-        self.mask = np.zeros(image.shape[:2], dtype=np.uint8)
+    def __init__(self):
+        self.mask = np.zeros(MODEL_RGB_IMAGE_SIZE, dtype=np.uint8)
+        self.center = None
+        self.hand_up = False
+
+    @property
+    def visible(self):
+        return self.center is not None
+
+    def update(self, contours, class):
+        self.hand_up = class == 0
         cv2.drawContours(self.mask, [contours], -1, 1, cv2.FILLED)
-        self.mask = self.mask.astype(bool)
-        self.center = np.mean(np.where(self.mask.T), axis=1).astype(np.int32)
+        self.center = np.mean(np.where(self.mask.T == 1), axis=1).astype(np.int32)
 
 
 class CameraNode:
@@ -64,7 +73,7 @@ class CameraNode:
         # print(results[0].boxes.cls[0])
 
         contours = np.int32([results[0].masks.xy[0]])
-        self.person = Person(rgb_image, contours)
+        self.person = Person(contours)
 
         if results[0].boxes.cls[0] == 0:
             rgb_image[self.person.mask, :] = 0
@@ -95,6 +104,7 @@ def main():
             if cv2.waitKey(1) & 0xFF == ord(" "):
                 break
         rate.sleep()
+
 
 if __name__ == "__main__":
     main()

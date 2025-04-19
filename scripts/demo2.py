@@ -4,7 +4,6 @@ import argparse
 
 from spatialmath.base import rotz
 from ultralytics import YOLO
-from ultralytics.utils.plotting import Annotator
 import cv2
 import rospy
 import rospkg
@@ -12,6 +11,7 @@ from sensor_msgs.msg import Image, PointCloud2, LaserScan
 from cv_bridge import CvBridge
 import sensor_msgs.point_cloud2 as pc2
 import numpy as np
+import ros_numpy
 import serving_demo as sd
 
 import mobile_manipulation_central as mm
@@ -38,6 +38,8 @@ LIN_ACC = 0.15
 
 # threshold for detected keypoint confidence
 KPT_CONFIDENCE = 0.75
+
+MAX_PEOPLE = 5
 
 # detection confidence
 DET_CONFIDENCE = 0.5
@@ -69,74 +71,11 @@ class SystemMode(Enum):
 
 
 class Person:
-    def __init__(self, id, center, keypoints):
-        self.id = id
-        self.keypoints = keypoints
-
-        # a default center value must be provided, but we will track the head
-        # if possible
-        self.center = center
-        head_pos = self._compute_head_position()
-        if head_pos is not None:
-            self.center = head_pos
-
-        self.box_xyxy = np.zeros(4)
-
-    def _compute_head_position(self):
-        head_kpts = self.keypoints[:5, :]
-        head_mask = head_kpts[:, 2] > KPT_CONFIDENCE
-        if not np.any(head_mask):
-            return None
-        return np.mean(head_kpts[head_mask, :2], axis=0)
-
-    def _in_box(self, keypoints):
-        return (
-            (keypoints[:, 0] >= self.box_xyxy[0])
-            & (keypoints[:, 0] <= self.box_xyxy[2])
-            & (keypoints[:, 1] >= self.box_xyxy[1])
-            & (keypoints[:, 1] <= self.box_xyxy[3])
-        )
-
-    def update(self, keypoints):
-        # only the confident positions are updated, but all the confidences are
-        # updated
-        mask = keypoints[:, 2] >= KPT_CONFIDENCE  #  & self._in_box(keypoints)
-        w1 = FILTER_WEIGHT
-        w2 = 1 - FILTER_WEIGHT
-        self.keypoints[mask, :2] = (
-            w1 * self.keypoints[mask, :2] + w2 * keypoints[mask, :2]
-        )
-        self.keypoints[:, 2] = w1 * self.keypoints[:, 2] + w2 * keypoints[:, 2]
-
-        # update center (of the head)
-        center = self._compute_head_position()
-        if center is None:
-            return
-        self.center = w1 * self.center + w2 * center
-
-    def has_hand_raised(self):
-        """Check if the person has their hand raised above the shoulder."""
-        # left_shoulder = self.keypoints[5, :]
-        # right_shoulder = self.keypoints[6, :]
-        left_wrist = self.keypoints[9, :]
-        right_wrist = self.keypoints[10, :]
-
-        head_kpts = self.keypoints[:5, :]
-        head_mask = head_kpts[:, 2] > KPT_CONFIDENCE
-        if not np.any(head_mask):
-            return False
-
-        # TODO why use min here?
-        head_height = np.min(head_kpts[head_mask, 1])
-
-        # recall that this is in image coordinates, so y is flipped
-        if left_wrist[2] > KPT_CONFIDENCE and left_wrist[1] < head_height:
-            return True
-
-        if right_wrist[2] > KPT_CONFIDENCE and right_wrist[1] < head_height:
-            return True
-
-        return False
+    def __init__(self, cls, contours):
+        self.mask = np.zeros(MODEL_RGB_IMAGE_SIZE, dtype=np.uint8)
+        self.hand_up = cls == 0
+        cv2.drawContours(self.mask, [contours], -1, 1, cv2.FILLED)
+        self.center = np.median(np.where(self.mask.T == 1), axis=1).astype(np.int32)
 
 
 def compute_range_limits(angles, angle_limit=np.pi / 2, front_limit=1, side_limit=0.5):
@@ -147,9 +86,9 @@ def compute_range_limits(angles, angle_limit=np.pi / 2, front_limit=1, side_limi
 
 class ServingNode:
     def __init__(self):
-        self.det_model = YOLO("yolo11s.pt")
-
-        self.model = YOLO("yolo11s-pose.pt")
+        # self.det_model = YOLO("yolo11s.pt")
+        # self.model = YOLO("yolo11s-pose.pt")
+        self.model = YOLO("../models/custom/weights/last.pt")
         self.bridge = CvBridge()
 
         self.scan_sub = rospy.Subscriber(
@@ -158,20 +97,19 @@ class ServingNode:
         self.rgb_sub = rospy.Subscriber(
             "/camera/color/image_raw", Image, self.rgb_callback, queue_size=1
         )
-        # self.points_sub = rospy.Subscriber(
-        #     "/camera/depth_registered/points",
-        #     PointCloud2,
-        #     self.points_callback,
-        #     queue_size=1,
-        # )
+        self.points_sub = rospy.Subscriber(
+            "/camera/depth_registered/points",
+            PointCloud2,
+            self.points_callback,
+            queue_size=1,
+        )
 
         self.rgb_image = None
-        self.people = {}
         self.target_id = None
+        self.target_depth = None
+        self.people = []
 
         self.safe_to_move = False
-
-        self.last_rgb_time = rospy.Time.now().to_sec()
 
     def scan_cb(self, scan):
         """Get ranges and angles from a scan."""
@@ -193,82 +131,57 @@ class ServingNode:
         valid = valid_angles & valid_ranges
         self.safe_to_move = not np.any(valid)
 
-    # def points_callback(self, msg):
-    #     if self.target is None:
-    #         return
-    #
-    #     # scale from network image size to camera image size
-    #     scale = (msg.width / MODEL_RGB_IMAGE_WIDTH, msg.height / MODEL_RGB_IMAGE_HEIGHT)
-    #     uv = (self.target * scale).astype(int).tolist()
-    #
-    #     # get corresponding 3D points
-    #     # TODO how to do this reliably?
-    #     target3d = pc2.read_points_list(msg, field_names=["x", "y", "z"], uvs=[uv])[0]
-    #     self.target3d = np.array([target3d.x, target3d.y, target3d.z])
-    #     # print(self.target3d)
+    def points_callback(self, msg):
+        if not self.has_target():
+            self.target_depth = None
+            return
+
+        data = ros_numpy.numpify(msg)
+        depth = data["z"]
+        depth = cv2.resize(depth, MODEL_RGB_IMAGE_SIZE)
+        self.target_depth = np.median(depth[self.person.mask])
 
     def rgb_callback(self, msg):
-        t = rospy.Time.now().to_sec()
-        # print(f"rgb time = {t - self.last_rgb_time}")
-        self.last_rgb_time = t
-
         rgb_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
         self.rgb_image = cv2.resize(rgb_image, MODEL_RGB_IMAGE_SIZE)
 
-        # only detect people
-        detections = self.det_model.predict(
-            self.rgb_image, classes=[0], max_det=1, verbose=False
+        results = self.model.predict(
+            self.rgb_image, max_det=MAX_PEOPLE, conf=DET_CONFIDENCE, verbose=False
         )
 
-        # keypoint detector is really slow if no one is in the scene, so we
-        # first just run detection
-        if len(detections[0].boxes.cls) == 0:
+        # TODO we may want to do some filtering here
+        n_det = len(results[0].boxes.cls)
+        hand_up_ids = []
+        people = []
+
+        for i in range(n_det):
+            cls = results[0].boxes.cls[i]
+            contours = np.int32([results[0].masks.xy[i]])
+            person = Person(cls, contours)
+            if person.hand_up:
+                hand_up_ids.append(i)
+            people.append(person)
+
+        # no one has their hand up
+        n_hand_up = len(hand_up_ids)
+        if n_hand_up == 0:
+            self.people = people
+            self.target_id = None
             return
 
-        results = self.model.track(self.rgb_image, conf=DET_CONFIDENCE, verbose=False)
-        boxes = results[0].boxes
-
-        # if the detector is uncertain the person won't be tracked right away,
-        # so we ignore for now
-        if not boxes.is_track:
+        # one target, no ambiguity
+        if n_hand_up == 1:
+            self.people = people
+            self.target_id = hand_up_ids[0]
             return
 
-        track_ids = boxes.id.int().cpu().tolist()
-        keypoints = results[0].keypoints.data.cpu().numpy()
-
-        # remove people that are no longer detected
-        # note conversion to list because we cannot delete keys while iterating
-        for id in list(self.people.keys()):
-            if id not in track_ids:
-                del self.people[id]
-
-        # add new people or update existing people
-        for i, id in enumerate(track_ids):
-            if id not in self.people:
-                # default center is centered in x and 3/4 up in y
-                x, y, w, h = boxes.xywh[i].cpu().numpy()
-                center = np.array([x, y - 0.25 * h])
-                self.people[id] = Person(id=id, center=center, keypoints=keypoints[i])
-            else:
-                self.people[id].update(keypoints=keypoints[i])
-
-            self.people[id].box_xyxy = boxes.xyxy[i].cpu().numpy()
-            # print(boxes.conf[i].cpu().numpy())
-
-        # check for raised hand
-        # current target still valid: it exists and still has a raised hand
-        if self.target_id is not None and self.target_id in self.people:
-            if self.people[self.target_id].has_hand_raised():
-                return
-
-        # target is invalid: check if a new target exists
-        for id, person in self.people.items():
-            if person.has_hand_raised():
-                self.target_id = id
-                return
-
-        # otherwise we have no target
-        self.target_id = None
+        # two targets, if there is an existing target, choose that one
+        target = self.people[self.target_id]
+        dists = np.array(
+            [np.linalg.norm(target.center - people[i].center) for i in hand_up_ids]
+        )
+        target_id = hand_up_ids[np.argmin(dists)]
+        self.people = people
 
     def has_target(self):
         return self.target_id is not None
@@ -298,14 +211,14 @@ class ServingNode:
         return error
 
     def annotated_image(self):
-        annotator = Annotator(self.rgb_image)
-
-        # (shallow) copy to avoid changing dict size during iteration
-        people = self.people.copy()
-        for track_id, person in people.items():
-            annotator.kpts(person.keypoints)
-            annotator.box_label(person.box_xyxy, str(track_id))
-        return annotator.result()
+        image = self.rgb_image.copy()
+        for person in self.people:
+            if person.cls == 0:
+                image[self.person.mask, :] = 0
+            else:
+                image[self.person.mask, :] = 255
+            cv2.circle(image, person.center, 5, [0, 0, 255], -1)
+        return image
 
 
 def change_velocity(v, vd, max_a, dt):

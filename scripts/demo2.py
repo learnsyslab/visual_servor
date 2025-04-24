@@ -13,6 +13,7 @@ import sensor_msgs.point_cloud2 as pc2
 import numpy as np
 import ros_numpy
 import serving_demo as sd
+from qpsolvers import solve_qp
 
 import mobile_manipulation_central as mm
 
@@ -36,29 +37,30 @@ ANG_ACC = 0.25
 LIN_VEL_MAX = 0.3
 LIN_ACC = 0.15
 
-# threshold for detected keypoint confidence
-KPT_CONFIDENCE = 0.75
-
+# maximum number of detected people
 MAX_PEOPLE = 5
 
 # detection confidence
 DET_CONFIDENCE = 0.5
 
 # weight for exponential filtering of the image detections
-FILTER_WEIGHT = 0.25
+# FILTER_WEIGHT = 0.25
+
+MINIMUM_DEPTH = 0.25
 
 # for home pose
 CONVERGENCE_TOL = 1e-2
 
 # time to wait when serving someone
+# TODO this is way too much time
 STABILIZE_TIME = 10
 WAIT_TIME = 4
 SERVING_TIME = STABILIZE_TIME + WAIT_TIME
 
 # arm joint limits
-Q_ELBOW_MIN = np.deg2rad(75)
-Q_ELBOW_MAX = np.deg2rad(120)
-Q_WRIST_MIN = 0
+Q_ELBOW_MIN = np.deg2rad(45)
+Q_ELBOW_MAX = np.deg2rad(135)
+Q_WRIST_MIN = -np.deg2rad(45)
 Q_WRIST_MAX = np.deg2rad(45)
 V_UP_MAX = 0.1  # rad/s  # TODO: tune
 
@@ -72,10 +74,20 @@ class SystemMode(Enum):
 
 class Person:
     def __init__(self, cls, contours):
-        self.mask = np.zeros(MODEL_RGB_IMAGE_SIZE, dtype=np.uint8)
         self.hand_up = cls == 0
+
+        # flip because width = columns and height = rows
+        self.mask = np.zeros(np.flip(MODEL_RGB_IMAGE_SIZE), dtype=np.uint8)
         cv2.drawContours(self.mask, [contours], -1, 1, cv2.FILLED)
-        self.center = np.median(np.where(self.mask.T == 1), axis=1).astype(np.int32)
+        self.mask = self.mask.astype(bool)
+
+        xs, ys = np.where(self.mask.T)
+        x = np.median(xs)
+
+        # we choose a lower quantile for y because we want to aim closer to the
+        # head (for servoing in the z-direction)
+        y = np.quantile(ys, 0.2)
+        self.center = np.array([x, y], dtype=np.int32)
 
 
 def compute_range_limits(angles, angle_limit=np.pi / 2, front_limit=1, side_limit=0.5):
@@ -86,32 +98,29 @@ def compute_range_limits(angles, angle_limit=np.pi / 2, front_limit=1, side_limi
 
 class ServingNode:
     def __init__(self):
-        # self.det_model = YOLO("yolo11s.pt")
-        # self.model = YOLO("yolo11s-pose.pt")
         self.model = YOLO("../models/custom/weights/last.pt")
         self.bridge = CvBridge()
 
         self.scan_sub = rospy.Subscriber(
-            "/front/scan", LaserScan, self.scan_cb, queue_size=1
+            "/front/scan", LaserScan, self._scan_cb, queue_size=1
         )
         self.rgb_sub = rospy.Subscriber(
-            "/camera/color/image_raw", Image, self.rgb_callback, queue_size=1
+            "/camera/color/image_raw", Image, self._rgb_cb, queue_size=1
         )
         self.points_sub = rospy.Subscriber(
             "/camera/depth_registered/points",
             PointCloud2,
-            self.points_callback,
+            self._points_cb,
             queue_size=1,
         )
 
         self.rgb_image = None
-        self.target_id = None
+        self.target = None
         self.target_depth = None
         self.people = []
+        self.points = []
 
-        self.safe_to_move = False
-
-    def scan_cb(self, scan):
+    def _scan_cb(self, scan):
         """Get ranges and angles from a scan."""
         MAX_DIST = 1.25
         MIN_ANGLE = -np.pi / 4.0
@@ -120,6 +129,9 @@ class ServingNode:
         n = len(scan.ranges)
         ranges = np.array(scan.ranges)
         angles = np.array([scan.angle_min + i * scan.angle_increment for i in range(n)])
+        points = (np.vstack((np.cos(angles), np.sin(angles))) * ranges).T
+
+        # get the returns we care about
         range_limits = compute_range_limits(
             angles,
             front_limit=MAX_DIST,
@@ -129,9 +141,11 @@ class ServingNode:
         valid_angles = (angles >= MIN_ANGLE) & (angles <= MAX_ANGLE)
         valid_ranges = (ranges >= scan.range_min) & (ranges <= range_limits)
         valid = valid_angles & valid_ranges
-        self.safe_to_move = not np.any(valid)
 
-    def points_callback(self, msg):
+        # only care about the valid points
+        self.points = points[valid, :]
+
+    def _points_cb(self, msg):
         if not self.has_target():
             self.target_depth = None
             return
@@ -139,9 +153,11 @@ class ServingNode:
         data = ros_numpy.numpify(msg)
         depth = data["z"]
         depth = cv2.resize(depth, MODEL_RGB_IMAGE_SIZE)
-        self.target_depth = np.median(depth[self.person.mask])
+        target_depth = np.median(depth[self.target.mask])
+        if target_depth >= MINIMUM_DEPTH:
+            self.target_depth = target_depth
 
-    def rgb_callback(self, msg):
+    def _rgb_cb(self, msg):
         rgb_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
         self.rgb_image = cv2.resize(rgb_image, MODEL_RGB_IMAGE_SIZE)
 
@@ -155,7 +171,7 @@ class ServingNode:
         people = []
 
         for i in range(n_det):
-            cls = results[0].boxes.cls[i]
+            cls = results[0].boxes.cls[i].cpu().numpy()
             contours = np.int32([results[0].masks.xy[i]])
             person = Person(cls, contours)
             if person.hand_up:
@@ -166,31 +182,67 @@ class ServingNode:
         n_hand_up = len(hand_up_ids)
         if n_hand_up == 0:
             self.people = people
-            self.target_id = None
+            self.target = None
             return
 
         # one target, no ambiguity
         if n_hand_up == 1:
             self.people = people
-            self.target_id = hand_up_ids[0]
+            self.target = people[hand_up_ids[0]]
             return
 
-        # two targets, if there is an existing target, choose that one
-        target = self.people[self.target_id]
-        dists = np.array(
-            [np.linalg.norm(target.center - people[i].center) for i in hand_up_ids]
-        )
-        target_id = hand_up_ids[np.argmin(dists)]
+        # multiple targets
+        if self.target is not None:
+            # if there is an existing target, choose that one
+            dists = np.array(
+                [np.linalg.norm(self.target.center - people[i].center) for i in hand_up_ids]
+            )
+            target_id = hand_up_ids[np.argmin(dists)]
+        else:
+            # otherwise, just pick the first one
+            target_id = hand_up_ids[0]
+        self.target = people[target_id]
         self.people = people
 
+    def filter_safe_velocity(self, lin_vel, ang_vel):
+        # TODO this can be made more sophisticated by considering the velocity
+        # of some other point on the robot
+        # TODO this should actually be a QP, unless we simply assume a
+        # circular disk around the robot
+        for point in self.points:
+            # nothing to do if velocity is zero already
+            if np.allclose(lin_vel, 0): # and np.isclose(ang_vel, 0):
+                break
+
+            n = sd.unit(point)
+
+            # if velocity is moving toward a detected obstacle point, remove
+            # that component
+            if n @ lin_vel > 0:
+                t = sd.orth(n)
+                lin_vel = (lin_vel @ t) * t
+
+            # y = point[1]
+            # if (y < 0 and ang_vel > 0) or (y > 0 and ang_vel < 0):
+            #     ang_vel = 0
+
+        # P = np.eye(3)
+        # q = np.zeros(3)
+        # ξd = np.append(lin_vel, ang_vel)
+        # G = np.zeros((
+        #
+        # for point in points:
+
+        return lin_vel, ang_vel
+
     def has_target(self):
-        return self.target_id is not None
+        return self.target is not None
 
     def compute_angular_error(self):
-        if self.target_id is None:
+        if self.target is None:
             return 0
 
-        target = self.people[self.target_id].center
+        target = self.target.center
         w2 = MODEL_RGB_IMAGE_WIDTH / 2
         error = w2 - target[0]
 
@@ -199,10 +251,10 @@ class ServingNode:
         return error
 
     def compute_height_error(self):
-        if self.target_id is None:
+        if self.target is None:
             return 0
 
-        target = self.people[self.target_id].center
+        target = self.target.center
         h2 = MODEL_RGB_IMAGE_HEIGHT / 2
         error = h2 - target[1]
 
@@ -213,10 +265,10 @@ class ServingNode:
     def annotated_image(self):
         image = self.rgb_image.copy()
         for person in self.people:
-            if person.cls == 0:
-                image[self.person.mask, :] = 0
+            if person.hand_up:
+                image[person.mask, :] = 0
             else:
-                image[self.person.mask, :] = 255
+                image[person.mask, :] = 255
             cv2.circle(image, person.center, 5, [0, 0, 255], -1)
         return image
 
@@ -356,7 +408,11 @@ def main():
         if mode == SystemMode.SERVING and mode_t <= SERVING_TIME:
             # stay in serving mode until time is up
             pass
-        elif mode == SystemMode.FOLLOWING_TARGET and not node.safe_to_move:
+        elif (
+            mode == SystemMode.FOLLOWING_TARGET
+            and node.target_depth is not None
+            and node.target_depth <= 1
+        ):
             stabilizer.reset()
             mode = SystemMode.SERVING
         elif node.has_target():
@@ -371,6 +427,7 @@ def main():
         # mode switch
         if mode != prev_mode:
             mode_start_time = t
+            print(f"mode = {mode}")
         prev_mode = mode
 
         # move based on mode
@@ -380,27 +437,27 @@ def main():
 
         if mode == SystemMode.HOME:
             arm_q_err = home[3:] - q[3:]
-            if mode_t <= STABILIZE_TIME:
-                x = stabilizer.update(q, tray.position, dt)
-                if x is None:
-                    print("failed to solve QP")
-                    break
-                arm_cmd_vel = x[3:]
-            elif np.linalg.norm(arm_q_err) > CONVERGENCE_TOL:
-                # move arm back to home after stabilizing
-                arm_cmd_vel = Kp @ arm_q_err
+            # if mode_t <= STABILIZE_TIME:
+            #     x = stabilizer.update(q, tray.position, dt)
+            #     if x is None:
+            #         print("failed to solve QP")
+            #         break
+            #     arm_cmd_vel = x[3:]
+            # elif np.linalg.norm(arm_q_err) > CONVERGENCE_TOL:
+            #     # move arm back to home after stabilizing
+            #     arm_cmd_vel = Kp * arm_q_err
         elif mode == SystemMode.SERVING:
             # TODO this now includes the deceleration time
             if not (np.allclose(lin_vel, 0) and np.isclose(ang_vel, 0)):
                 pass
                 # keep pushing back the start time until base has stopped
                 # serving_start = t
-            elif mode_t <= STABILIZE_TIME:
-                x = stabilizer.update(q, tray.position, dt)
-                if x is None:
-                    print("failed to solve QP")
-                    break
-                arm_cmd_vel = x[3:]
+            # elif mode_t <= STABILIZE_TIME:
+            #     x = stabilizer.update(q, tray.position, dt)
+            #     if x is None:
+            #         print("failed to solve QP")
+            #         break
+            #     arm_cmd_vel = x[3:]
         elif mode == SystemMode.MOVING_HOME:
             error = home[:3] - q[:3]
             error[2] = mm.wrap_to_pi(error[2])
@@ -427,11 +484,12 @@ def main():
         else:
             raise ValueError(f"Invalid mode: {mode}")
 
-        if not node.safe_to_move:
-            # stop linear motion if it is in forward direction
-            if lin_vel_des[0] >= 0:
-                lin_vel_des = np.zeros(2)
-            ang_vel_des = 0
+        # if not node.safe_to_move:
+        #     # stop linear motion if it is in forward direction
+        #     if lin_vel_des[0] >= 0:
+        #         lin_vel_des = np.zeros(2)
+        #     ang_vel_des = 0
+        lin_vel_des, ang_vel_des = node.filter_safe_velocity(lin_vel_des, ang_vel_des)
 
         # accelerate toward desired velocity
         lin_vel = change_velocity(lin_vel, lin_vel_des, LIN_ACC, dt)
@@ -454,7 +512,8 @@ def main():
         # send command to the robot
         if args.dry_run:
             # print(f"q = {q}")
-            print(f"cmd_vel = {cmd_vel}")
+            # print(f"cmd_vel = {cmd_vel}")
+            pass
         else:
             robot.publish_cmd_vel(cmd_vel, bodyframe=True)
 

@@ -3,7 +3,6 @@ import argparse
 
 import numpy as np
 import rospy
-from qpsolvers import solve_qp
 
 import mobile_manipulation_central as mm
 import serving_demo as sd

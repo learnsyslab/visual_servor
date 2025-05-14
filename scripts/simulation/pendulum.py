@@ -170,8 +170,9 @@ for i in range(STEPS):
 
     # inject energy into the system and then stabilize velocity
     if 2 < t < 4:
+        # TODO it is unlikely we can actually pull this off with only a tensile force
         vpx = (C @ np.cross(ξ.angular, params_p.com))[0]
-        u = np.array([-np.sign(vpx), 0, 0])
+        u = np.array([-vpx, 0, 0])
     elif t >= 4:
         u = -C @ ξ.linear
 

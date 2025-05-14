@@ -27,7 +27,7 @@ ACTUATED_JOINT_NAMES = [
     "ur10_arm_wrist_3_joint",
 ]
 TIMESTEP = 0.01
-DURATION = 30.0
+DURATION = 10.0
 
 
 def main():
@@ -64,7 +64,7 @@ def main():
         for name in ["pendulum_x_joint", "pendulum_y_joint", "pendulum_z_joint"]
     ]
     robot.set_joint_friction_forces(
-        forces=[0.01, 0.01, 0.01], joint_indices=pendulum_joint_indices
+        forces=[0.0, 0.0, 0.0], joint_indices=pendulum_joint_indices
     )
     tray_idx = robot.get_link_index("tray_pendulum")
 
@@ -79,13 +79,22 @@ def main():
     lin_vel_des = np.zeros(3)
     tray_was_vertical = False
 
+    r_ee_d, _ = robot.get_link_com_pose()
+    r_tray_d, _ = robot.get_link_com_pose(link_idx=tray_idx)
+    c_d = r_tray_d - r_ee_d
+
+    ts = []
+    ω_trays = []
+    Δr_ees = []
+
     t = 0
     i = 0
     while t <= DURATION:
         q, v = robot.get_joint_states()
         J = robot.compute_link_jacobian(q)[:, :9]
 
-        v_tray, _ = robot.get_link_com_velocity(link_idx=tray_idx)
+        v_ee, _ = robot.get_link_com_velocity()
+        v_tray, ω_tray = robot.get_link_com_velocity(link_idx=tray_idx)
 
         # detect when the tray is just about vertical
         r_ee, _ = robot.get_link_com_pose()
@@ -93,16 +102,32 @@ def main():
         if r_tray[2] - r_ee[2] > 0.28:
             tray_was_vertical = True
 
-        if t < 0.5:
+        if t < 1.0:
             # get things started
             cmd_vel = np.zeros(9)
             cmd_vel[1] = t
+            cmd_vel[0] = 0.5*t
+
+            r_ee_d = r_ee
+            r_tray_d = r_tray
+
         elif not tray_was_vertical:
             # pump energy into the tray
-            u = np.zeros(3)
-            u[1] = -v_tray[1]
+
+            c = r_tray - r_ee
+            Δr_ee = r_ee_d - r_ee
+
+            # stabilize tray
+            u = 2*np.cross(ω_tray, c) - v_ee + Δr_ee
+            # u = np.cross(ω_tray, c) - lin_vel_des + Δr - (c @ lin_vel_des) * c
+            # u = -lin_vel_des + Δr
+
+            # u = -lin_vel_des + Δr
             lin_vel_des += TIMESTEP * u
 
+            # lin_vel_des = np.cross(ω_tray, r_tray - r_ee) + Δr
+
+            # TODO limits on the actual EE velocity? I can just clamp it here
             A = np.vstack((A1, J))
             b = np.concatenate((b1, lin_vel_des, np.zeros(3)))
             cmd_vel = solve_qp(P=P, q=qq, A=A, b=b, solver="proxqp")
@@ -115,7 +140,31 @@ def main():
         i += 1
         t = i * TIMESTEP
 
+        ts.append(t)
+        Δr_ees.append(r_ee_d - r_ee)
+        ω_trays.append(ω_tray)
+
         time.sleep(TIMESTEP)
+
+    ts = np.array(ts)
+    ω_trays = np.array(ω_trays)
+    Δr_ees = np.array(Δr_ees)
+
+    plt.figure()
+    plt.title("EE position")
+    plt.plot(ts, Δr_ees[:, 1], label="y")
+    plt.xlabel("Time [s]")
+    plt.ylabel("y [m]")
+    plt.grid()
+
+    plt.figure()
+    plt.title("Tray angular velocity")
+    plt.plot(ts, ω_trays[:, 0], label="ω_x")
+    plt.xlabel("Time [s]")
+    plt.ylabel("ω [rad/s]")
+    plt.grid()
+
+    plt.show()
 
 
 if __name__ == "__main__":

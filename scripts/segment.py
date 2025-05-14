@@ -17,19 +17,10 @@ MODEL_RGB_IMAGE_SIZE = (MODEL_RGB_IMAGE_WIDTH, MODEL_RGB_IMAGE_HEIGHT)
 
 
 class Person:
-    def __init__(self):
-        self.mask = np.zeros(MODEL_RGB_IMAGE_SIZE, dtype=np.uint8)
-        self.center = None
-        self.hand_up = False
-
-    @property
-    def visible(self):
-        return self.center is not None
-
-    def update(self, contours, class):
-        self.hand_up = class == 0
+    def __init__(self, contours):
+        self.mask = np.zeros(np.flip(MODEL_RGB_IMAGE_SIZE), dtype=np.uint8)
         cv2.drawContours(self.mask, [contours], -1, 1, cv2.FILLED)
-        self.center = np.mean(np.where(self.mask.T == 1), axis=1).astype(np.int32)
+        self.center = np.mean(np.where(self.mask == 1), axis=1).astype(np.int32)
 
 
 class CameraNode:
@@ -60,6 +51,7 @@ class CameraNode:
         depth = data["z"]
         depth = cv2.resize(depth, MODEL_RGB_IMAGE_SIZE)
         print(np.median(depth[self.person.mask]))
+        IPython.embed()
 
     def rgb_callback(self, msg):
         rgb_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
@@ -81,16 +73,6 @@ class CameraNode:
             rgb_image[self.person.mask, :] = 255
         cv2.circle(rgb_image, self.person.center, 5, [0, 0, 255], -1)
         self.rgb_image = rgb_image
-
-    def annotated_image(self):
-        annotator = Annotator(self.rgb_image)
-
-        # (shallow) copy to avoid changing dict size during iteration
-        people = self.people.copy()
-        for track_id, person in people.items():
-            annotator.kpts(person.keypoints)
-            annotator.box_label(person.box_xyxy, str(track_id))
-        return annotator.result()
 
 
 def main():

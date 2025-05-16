@@ -1,9 +1,42 @@
 import numpy as np
 from qpsolvers import solve_qp
+from scipy.linalg import solve_continuous_are
 
 import mobile_manipulation_central as mm
 
 import IPython
+
+
+def skew3(v):
+    """Return the skew-symmetric matrix of a 3D vector."""
+    return np.array(
+        [
+            [0, -v[2], v[1]],
+            [v[2], 0, -v[0]],
+            [-v[1], v[0], 0],
+        ]
+    )
+
+
+def pendulum_lqr_gain(length, gravity):
+    ρ = np.array([0, 0, -1])
+    g = np.array([0, 0, gravity])
+
+    # x-y components of each of r, ρ, rdot, ρdot
+    A = np.zeros((8, 8))
+    A[0:2, 4:6] = np.eye(2)
+    A[2:4, 6:8] = np.eye(2)
+    A[6:8, 2:4] = ((skew3(np.cross(ρ, g)) + skew3(ρ) @ skew3(g)) / length)[:2, :2]
+
+    B = np.zeros((8, 2))
+    B[4:6, :] = np.eye(2)
+    B[6:8, :] = (skew3(ρ) @ skew3(ρ) / length)[:2, :2]
+
+    # solve for feedback gain u = -K @ x with LQR
+    Q = np.eye(8)
+    R = 0.1 * np.eye(2)
+    P = solve_continuous_are(A, B, Q, R)
+    return np.linalg.solve(R, B.T @ P)
 
 
 class PendulumStabilizer:
@@ -15,6 +48,7 @@ class PendulumStabilizer:
         accel_max=0.5,
         vel_max=0.1,
         joint_vel_max=0.1,
+        length=0.3,
     ):
         self.gain = gain
         self.model = model
@@ -32,7 +66,15 @@ class PendulumStabilizer:
         self.tray_pos_prev = None
         self.v_ee = np.zeros(3)
 
-    def reset(self):
+        # LQR quantities
+        self.lqr_gain = pendulum_lqr_gain(length=length, gravity=-9.81)
+        self.length = length
+        self.r_ee_d = None
+
+    def reset(self, q):
+        self.model.forward(q)
+        self.r_ee_d, _ = self.model.link_pose()
+
         self.v_ee = np.zeros(3)
         self.tray_pos_prev = None
         self.tray_vel_filter.reset()
@@ -46,8 +88,19 @@ class PendulumStabilizer:
         self.tray_pos_prev = tray_position
         v_tray = self.tray_vel_filter.update(v_tray_raw, dt)
 
+        # compute LQR state
+        self.model.forward(q)
+        r_ee, C_ee = self.model.link_pose(rotation_matrix=True)
+        Δr = self.r_ee_d - r_ee
+        ρ = (r_tray - r_ee) / self.length
+        ρdot = (v_tray - v_ee) / self.length
+
         # compute acceleration input
-        u = self.gain * (v_tray - 2 * self.v_ee)
+        # u = self.gain * (v_tray - 2 * self.v_ee)
+        x = np.concatenate((Δr[:2], ρ[:2], self.v_ee[:2], ρdot[:2]))
+        u = np.zeros(3)
+        u[:2] = -self.lqr_gain @ x
+
         u = np.clip(u, -self.accel_max, self.accel_max)
 
         # integrate to get commanded velocity
@@ -60,6 +113,7 @@ class PendulumStabilizer:
         ξ_ee = np.concatenate((self.v_ee, np.zeros(3)))
         A = np.hstack((J[:, 3:], -ξ_ee.reshape((6, 1))))
 
+        # TODO we may also want to steer back toward q0 rather than just desired r
         # TODO use problem class?
         x = solve_qp(
             P=self.P,

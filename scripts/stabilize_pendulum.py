@@ -38,6 +38,9 @@ def main():
         rate.sleep()
     print("...robot ready.")
 
+    q0 = robot.q
+    stabilizer.reset(q0)
+
     t0 = rospy.Time.now().to_sec()
     while not rospy.is_shutdown():
         t = rospy.Time.now().to_sec() - t0

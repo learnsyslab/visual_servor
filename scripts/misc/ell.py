@@ -19,7 +19,7 @@ pn = c + sd.unit(p - c)
 plt.figure()
 ax = plt.gca()
 
-patch = Ellipse(c, rx, ry, fill=False)
+patch = Ellipse(c, 2*rx, 2*ry, fill=False)
 ax.add_patch(patch)
 ax.set_aspect("equal")
 

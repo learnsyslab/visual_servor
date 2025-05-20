@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import rospy
 import rospkg
+import yaml
 
 import mobile_manipulation_central as mm
 import serving_demo as sd
@@ -28,7 +29,7 @@ def main():
     pkg_path = Path(rospack.get_path("serving_demo"))
     calib_path = pkg_path / "config" / "pendulum_calibration.yaml"
     with open(calib_path) as f:
-        calib = yaml.load(f)
+        calib = yaml.safe_load(f)
         r_tray_ee = np.array(calib["r_tray_ee"])
 
     rospy.init_node("pendulum_node", disable_signals=True)

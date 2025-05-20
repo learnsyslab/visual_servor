@@ -122,6 +122,8 @@ class ServingNode:
 
     def _scan_cb(self, scan):
         """Get ranges and angles from a scan."""
+        MIN_ANGLE = -np.pi / 4.0
+        MAX_ANGLE = np.pi / 4.0
 
         # TODO tune this
         lidar_position = np.array([0.25, 0])

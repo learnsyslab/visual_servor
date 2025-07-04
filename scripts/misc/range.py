@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-ANGLE_LIMIT = np.pi / 4
+ANGLE_LIMIT = 0.01
 
 SIDE_LIMIT = 0.75
 FRONT_LIMIT = 1.25

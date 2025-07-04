@@ -34,7 +34,7 @@ def pendulum_lqr_gain(length, gravity):
 
     # solve for feedback gain u = -K @ x with LQR
     Q = np.eye(8)
-    R = 0.1 * np.eye(2)
+    R = 1 * np.eye(2)
     P = solve_continuous_are(A, B, Q, R)
     return np.linalg.solve(R, B.T @ P)
 
@@ -48,7 +48,6 @@ class PendulumStabilizer:
         accel_max=0.5,
         vel_max=0.1,
         joint_vel_max=0.1,
-        length=0.3,
     ):
         self.gain = gain
         self.model = model
@@ -66,10 +65,15 @@ class PendulumStabilizer:
         self.tray_pos_prev = None
         self.v_ee = np.zeros(3)
 
-        # LQR quantities
-        self.lqr_gain = pendulum_lqr_gain(length=length, gravity=-9.81)
-        self.length = length
-        self.r_ee_d = None
+    def init(self, q0, r_tray_ee):
+        # compute offset corresponding to tray origin
+        self.model.forward(q0)
+        self.r_ee_d, _ = self.model.link_pose()
+
+        self.tray_offset = np.append(-r_tray_ee[:2], 0)
+        self.length = np.abs(r_tray_ee[2])
+
+        self.lqr_gain = pendulum_lqr_gain(length=self.length, gravity=-9.81)
 
     def reset(self, q):
         self.model.forward(q)
@@ -79,28 +83,37 @@ class PendulumStabilizer:
         self.tray_pos_prev = None
         self.tray_vel_filter.reset()
 
-    def update(self, q, tray_position, dt, solver="quadprog"):
-        # estimate tray velocity
+    def _estimate_tray_vel(self, tray_position, dt):
         if self.tray_pos_prev is None:
             v_tray_raw = np.zeros(3)
         else:
             v_tray_raw = (tray_position - self.tray_pos_prev) / dt
         self.tray_pos_prev = tray_position
-        v_tray = self.tray_vel_filter.update(v_tray_raw, dt)
+        return self.tray_vel_filter.update(v_tray_raw, dt)
 
-        # compute LQR state
+    def _compute_input_lqr(self, q, r_tray, v_tray):
         self.model.forward(q)
-        r_ee, C_ee = self.model.link_pose(rotation_matrix=True)
-        Δr = self.r_ee_d - r_ee
+        r_ee, _ = self.model.link_pose()
+        Δr = r_ee - self.r_ee_d
         ρ = (r_tray - r_ee) / self.length
-        ρdot = (v_tray - v_ee) / self.length
+        ρdot = (v_tray - self.v_ee) / self.length
+
+        # LQR state
+        x = np.concatenate((Δr[:2], ρ[:2], self.v_ee[:2], ρdot[:2]))
+
+        u = np.zeros(3)
+        u[:2] = -self.lqr_gain @ x
+        return u
+
+    def update(self, q, tray_position, dt, solver="quadprog"):
+        # estimate tray velocity
+        v_tray = self._estimate_tray_vel(tray_position, dt)
 
         # compute acceleration input
         # u = self.gain * (v_tray - 2 * self.v_ee)
-        x = np.concatenate((Δr[:2], ρ[:2], self.v_ee[:2], ρdot[:2]))
-        u = np.zeros(3)
-        u[:2] = -self.lqr_gain @ x
-
+        r_tray = tray_position + self.tray_offset
+        u = self._compute_input_lqr(q, r_tray, v_tray)
+        print(f"u = {u}")
         u = np.clip(u, -self.accel_max, self.accel_max)
 
         # integrate to get commanded velocity

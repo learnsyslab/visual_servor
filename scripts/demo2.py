@@ -122,6 +122,29 @@ class ServingNode:
 
     def _scan_cb(self, scan):
         """Get ranges and angles from a scan."""
+        MIN_ANGLE = -np.pi / 4.0
+        MAX_ANGLE = np.pi / 4.0
+
+        # TODO tune this
+        lidar_position = np.array([0.25, 0])
+
+        # construct the raw points
+        n = len(scan.ranges)
+        ranges = np.array(scan.ranges)
+        angles = np.array([scan.angle_min + i * scan.angle_increment for i in range(n)])
+        points = (np.vstack((np.cos(angles), np.sin(angles))) * ranges).T
+
+        # remove points at invalid angles
+        valid = (angles >= MIN_ANGLE) & (angles <= MAX_ANGLE)
+        points = points[valid, :]
+
+        # relative to the base reference frame
+        self.points = points + lidar_position
+        return
+
+        # TODO now I need to compute the normal associated with each point
+
+        ####
         MAX_DIST = 1.25
         MIN_ANGLE = -np.pi / 4.0
         MAX_ANGLE = np.pi / 4.0
@@ -195,7 +218,10 @@ class ServingNode:
         if self.target is not None:
             # if there is an existing target, choose that one
             dists = np.array(
-                [np.linalg.norm(self.target.center - people[i].center) for i in hand_up_ids]
+                [
+                    np.linalg.norm(self.target.center - people[i].center)
+                    for i in hand_up_ids
+                ]
             )
             target_id = hand_up_ids[np.argmin(dists)]
         else:
@@ -205,35 +231,63 @@ class ServingNode:
         self.people = people
 
     def filter_safe_velocity(self, lin_vel, ang_vel):
-        # TODO this can be made more sophisticated by considering the velocity
-        # of some other point on the robot
-        # TODO this should actually be a QP, unless we simply assume a
-        # circular disk around the robot
-        for point in self.points:
-            # nothing to do if velocity is zero already
-            if np.allclose(lin_vel, 0): # and np.isclose(ang_vel, 0):
-                break
-
-            n = sd.unit(point)
-
-            # if velocity is moving toward a detected obstacle point, remove
-            # that component
-            if n @ lin_vel > 0:
-                t = sd.orth(n)
-                lin_vel = (lin_vel @ t) * t
-
-            # y = point[1]
-            # if (y < 0 and ang_vel > 0) or (y > 0 and ang_vel < 0):
-            #     ang_vel = 0
-
-        # P = np.eye(3)
-        # q = np.zeros(3)
-        # ξd = np.append(lin_vel, ang_vel)
-        # G = np.zeros((
+        # for point in self.points:
+        #     # nothing to do if velocity is zero already
+        #     if np.allclose(lin_vel, 0):  # and np.isclose(ang_vel, 0):
+        #         break
         #
-        # for point in points:
+        #     # if velocity is moving toward a detected obstacle point, remove
+        #     # that component
+        #     n = sd.unit(point)
+        #     if n @ lin_vel > 0:
+        #         t = sd.orth(n)
+        #         lin_vel = (lin_vel @ t) * t
 
-        return lin_vel, ang_vel
+        # QP formulation
+        if len(self.points) == 0:
+            return lin_vel, ang_vel
+
+        # define bounding ellipsoid
+        rx = 0.75
+        ry = 0.5
+        A = np.diag([1.0 / rx**2, 1.0 / ry**2])
+        c = np.array([0.25, 0])
+
+        # remove points outside of the collision ellipse
+        points = self.points
+        x = points - c
+        tangents = x @ A
+        valid = np.sum(x * tangents, axis=1) <= 1
+
+        points = points[valid, :]
+        tangents = tangents[valid, :]
+
+        n = len(points)
+        if n == 0:
+            # none of the points are inside the ellipse
+            return lin_vel, ang_vel
+
+        P = np.eye(3)
+        ξd = np.append(lin_vel, ang_vel)
+        h = np.zeros(n)
+
+        # TODO may be able to vectorize by computing all zs at once
+        S = np.array([[0, -1], [1, 0]])
+        zs = np.sum(tangents * (S @ points.T).T, axis=1)
+        G = np.hstack((tangents, zs[:, None]))
+
+        # G = np.zeros((n, 3))
+        # for i in range(n):
+        #     normal = normals[i, :]
+        #     point = points[i, :]
+        #     z = -normal[0] * point[1] + normal[1] * point[0]
+        #     G[i, :] = np.append(normal, z)
+
+        x = solve_qp(P=P, q=-ξd, G=G, h=h, solver="quadprog")
+        if x is None:
+            print("failed to solve obstacle avoidance QP")
+            return np.zeros(2), 0
+        return x[:2], x[2]
 
     def has_target(self):
         return self.target is not None

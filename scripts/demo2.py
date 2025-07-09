@@ -86,7 +86,7 @@ class Person:
 
         # we choose a lower quantile for y because we want to aim closer to the
         # head (for servoing in the z-direction)
-        y = np.quantile(ys, 0.2)
+        y = np.quantile(ys, 0.25)
         self.center = np.array([x, y], dtype=np.int32)
 
 
@@ -256,6 +256,8 @@ class ServingNode:
         # remove points outside of the collision ellipse
         points = self.points
         x = points - c
+
+        # TODO is this actually tangent or is it normal?
         tangents = x @ A
         valid = np.sum(x * tangents, axis=1) <= 1
 

@@ -2,23 +2,13 @@ import numpy as np
 from qpsolvers import solve_qp
 from scipy.linalg import solve_continuous_are
 
+import rigeo as rg
 import mobile_manipulation_central as mm
 
 import IPython
 
 
-def skew3(v):
-    """Return the skew-symmetric matrix of a 3D vector."""
-    return np.array(
-        [
-            [0, -v[2], v[1]],
-            [v[2], 0, -v[0]],
-            [-v[1], v[0], 0],
-        ]
-    )
-
-
-def pendulum_lqr_gain(length, gravity):
+def pendulum_lqr_gain(length, gravity=-9.81):
     ρ = np.array([0, 0, -1])
     g = np.array([0, 0, gravity])
 
@@ -26,11 +16,11 @@ def pendulum_lqr_gain(length, gravity):
     A = np.zeros((8, 8))
     A[0:2, 4:6] = np.eye(2)
     A[2:4, 6:8] = np.eye(2)
-    A[6:8, 2:4] = ((skew3(np.cross(ρ, g)) + skew3(ρ) @ skew3(g)) / length)[:2, :2]
+    A[6:8, 2:4] = ((rg.skew3(np.cross(ρ, g)) + rg.skew3(ρ) @ rg.skew3(g)) / length)[:2, :2]
 
     B = np.zeros((8, 2))
     B[4:6, :] = np.eye(2)
-    B[6:8, :] = (skew3(ρ) @ skew3(ρ) / length)[:2, :2]
+    B[6:8, :] = (rg.skew3(ρ) @ rg.skew3(ρ) / length)[:2, :2]
 
     # solve for feedback gain u = -K @ x with LQR
     Q = np.eye(8)
@@ -73,7 +63,7 @@ class PendulumStabilizer:
         self.tray_offset = np.append(-r_tray_ee[:2], 0)
         self.length = np.abs(r_tray_ee[2])
 
-        self.lqr_gain = pendulum_lqr_gain(length=self.length, gravity=-9.81)
+        self.lqr_gain = pendulum_lqr_gain(length=self.length)
 
     def reset(self, q):
         self.model.forward(q)
@@ -110,7 +100,6 @@ class PendulumStabilizer:
         v_tray = self._estimate_tray_vel(tray_position, dt)
 
         # compute acceleration input
-        # u = self.gain * (v_tray - 2 * self.v_ee)
         r_tray = tray_position + self.tray_offset
         u = self._compute_input_lqr(q, r_tray, v_tray)
         print(f"u = {u}")

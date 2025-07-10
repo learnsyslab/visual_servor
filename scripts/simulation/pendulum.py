@@ -12,18 +12,14 @@ import IPython
 np.set_printoptions(precision=4, suppress=True)
 
 
-DURATION = 12
-STEPS = DURATION * 100
-TIMESTEP = DURATION / STEPS
-
-INTERVAL = DURATION / 3
+INTERVAL = 4
+STEPS_PER_SEC = 100
+TIMESTEP = 1 / STEPS_PER_SEC
 
 GRAVITY = np.array([0, 0, -9.81])
 
 TRAY_RADIUS = 0.2
 CYLINDER_HEIGHT = 0.001
-
-# height of the object's CoM above its base
 OBJ_BASE_HALF_EXTENT = 0.05
 
 # object-tray friction coefficient
@@ -36,6 +32,7 @@ def simulate(
     accel=3,
     static=False,
     pump_energy=False,
+    stabilize=False,
     plot=True,
 ):
     def input_accel(t):
@@ -44,6 +41,9 @@ def simulate(
         elif t <= 2 * INTERVAL:
             return np.array([-accel, 0, 0])
         return np.zeros(3)
+
+    duration = 5 * INTERVAL if stabilize else 3 * INTERVAL
+    N = duration * STEPS_PER_SEC
 
     tray = rg.Cylinder(
         length=CYLINDER_HEIGHT, radius=TRAY_RADIUS, center=[0, 0, -pendulum_length]
@@ -90,6 +90,7 @@ def simulate(
 
     # initial state
     ξ = rg.SV.zero()
+    r = np.zeros(3)
     C = np.eye(3)  # this is C_wb
 
     # spatial acceleration: this can be computed analytically
@@ -136,6 +137,10 @@ def simulate(
 
     problem = cp.Problem(objective, constraints)
 
+    # LQR
+    lqr_gain = sd.pendulum_lqr_gain(length=pendulum_length)
+    stabilizing = False
+
     ts = []
     us = []
     φs = []
@@ -146,14 +151,35 @@ def simulate(
     t_fail = None
 
     t = 0
-    for i in range(STEPS):
+    for i in range(N):
         t = i * TIMESTEP
         u = input_accel(t)
 
+        r_tray = r + C @ tray_params.com
+        r_tray_dot = C @ (ξ.linear + np.cross(ξ.angular, tray_params.com))
+
         # pump energy into the system
         if pump_energy and t > INTERVAL:
-            v_p = ξ.linear + np.cross(ξ.angular, tray_params.com)
-            u = -sd.unit(C @ v_p) * accel
+            u = -sd.unit(r_tray_dot) * accel
+
+        if stabilize and t > 3 * INTERVAL:
+            # initialize stabilization
+            if not stabilizing:
+                r_d = r.copy()
+            stabilizing = True
+
+            r_dot = C @ ξ.linear
+
+            # all quantities in global frame
+            Δr = r - r_d
+            ρ = (r_tray - r) / pendulum_length
+            ρ_dot = (r_tray_dot - r_dot) / pendulum_length
+
+            # LQR state
+            x = np.concatenate((Δr[:2], ρ[:2], r_dot[:2], ρ_dot[:2]))
+
+            u = np.zeros(3)
+            u[:2] = -lqr_gain @ x
 
         # solve for spatial acceleration
         if static:
@@ -185,6 +211,7 @@ def simulate(
 
         # integrate forward in time
         ξ = ξ + rg.SV(linear=vdot.value, angular=ωdot.value) * TIMESTEP
+        r = r + C @ ξ.linear * TIMESTEP
         C = C @ expm(rg.skew3(ξ.angular) * TIMESTEP)
 
         ts.append(t)
@@ -269,6 +296,9 @@ def simulate(
 
 
 def main():
+    s_max, t_fail = simulate(stabilize=True, plot=True)
+    print(f"s = {s_max}, t = {t_fail}")
+
     # scale up acceleration
     # TODO should I also test the time intervals?
     # for a in [2, 2.5, 3, 3.5, 4, 4.5, 5]:
@@ -285,8 +315,9 @@ def main():
     #     s_max, _ = simulate(pendulum_length=L, plot=False)
     #     print(f"L = {L}, max s = {s_max}")
 
-    s_max, t_fail = simulate(pump_energy=True, plot=False)
-    print(f"s = {s_max}, t = {t_fail}")
+    # failure case
+    # s_max, t_fail = simulate(pump_energy=True, plot=False)
+    # print(f"s = {s_max}, t = {t_fail}")
 
 
 if __name__ == "__main__":

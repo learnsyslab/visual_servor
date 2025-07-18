@@ -28,6 +28,10 @@ MODEL_RGB_IMAGE_SIZE = (MODEL_RGB_IMAGE_WIDTH, MODEL_RGB_IMAGE_HEIGHT)
 # control rate (Hz)
 RATE = 100
 
+# lidar offset from base origin
+# TODO: tune this
+LIDAR_OFFSET = np.array([0.25, 0])
+
 # only display a new image after this much time has elapsed
 DISPLAY_TIME_INTERVAL = 0.1
 
@@ -90,16 +94,18 @@ class Person:
         self.center = np.array([x, y], dtype=np.int32)
 
 
-def compute_range_limits(angles, angle_limit=np.pi / 2, front_limit=1, side_limit=0.5):
-    a = (side_limit - front_limit) / (np.cos(angle_limit) - 1)
-    b = front_limit - a
-    return a * np.cos(angles) + b
-
-
 class ServingNode:
     def __init__(self):
         self.model = YOLO("../models/custom/weights/last.pt")
         self.bridge = CvBridge()
+
+        self.collision_ellipse = sd.CollisionEllipse(rx=0.8, ry=0.6, center=[0.25, 0])
+
+        self.rgb_image = None
+        self.target = None
+        self.target_depth = None
+        self.people = []
+        self.lidar_points = []
 
         self.scan_sub = rospy.Subscriber(
             "/front/scan", LaserScan, self._scan_cb, queue_size=1
@@ -107,68 +113,29 @@ class ServingNode:
         self.rgb_sub = rospy.Subscriber(
             "/camera/color/image_raw", Image, self._rgb_cb, queue_size=1
         )
-        self.points_sub = rospy.Subscriber(
+        self.pointcloud_sub = rospy.Subscriber(
             "/camera/depth_registered/points",
             PointCloud2,
-            self._points_cb,
+            self._pointcloud_cb,
             queue_size=1,
         )
 
-        self.rgb_image = None
-        self.target = None
-        self.target_depth = None
-        self.people = []
-        self.points = []
-
     def _scan_cb(self, scan):
         """Get ranges and angles from a scan."""
-        MIN_ANGLE = -np.pi / 4.0
-        MAX_ANGLE = np.pi / 4.0
-
-        # TODO tune this
-        lidar_position = np.array([0.25, 0])
-
-        # construct the raw points
         n = len(scan.ranges)
         ranges = np.array(scan.ranges)
         angles = np.array([scan.angle_min + i * scan.angle_increment for i in range(n)])
-        points = (np.vstack((np.cos(angles), np.sin(angles))) * ranges).T
+        lidar_points = (np.vstack((np.cos(angles), np.sin(angles))) * ranges).T
 
-        # remove points at invalid angles
-        valid = (angles >= MIN_ANGLE) & (angles <= MAX_ANGLE)
-        points = points[valid, :]
+        # remove invalid points
+        valid = (ranges >= scan.range_min) & (ranges <= scan.range_max)
+        lidar_points = lidar_points[valid, :]
 
         # relative to the base reference frame
-        self.points = points + lidar_position
-        return
+        self.lidar_points = lidar_points + LIDAR_OFFSET
 
-        # TODO now I need to compute the normal associated with each point
-
-        ####
-        MAX_DIST = 1.25
-        MIN_ANGLE = -np.pi / 4.0
-        MAX_ANGLE = np.pi / 4.0
-
-        n = len(scan.ranges)
-        ranges = np.array(scan.ranges)
-        angles = np.array([scan.angle_min + i * scan.angle_increment for i in range(n)])
-        points = (np.vstack((np.cos(angles), np.sin(angles))) * ranges).T
-
-        # get the returns we care about
-        range_limits = compute_range_limits(
-            angles,
-            front_limit=MAX_DIST,
-            side_limit=0.6 * MAX_DIST,
-            angle_limit=MAX_ANGLE,
-        )
-        valid_angles = (angles >= MIN_ANGLE) & (angles <= MAX_ANGLE)
-        valid_ranges = (ranges >= scan.range_min) & (ranges <= range_limits)
-        valid = valid_angles & valid_ranges
-
-        # only care about the valid points
-        self.points = points[valid, :]
-
-    def _points_cb(self, msg):
+    def _pointcloud_cb(self, msg):
+        # we don't care about depth if there is no target
         if not self.has_target():
             self.target_depth = None
             return
@@ -231,65 +198,9 @@ class ServingNode:
         self.people = people
 
     def filter_safe_velocity(self, lin_vel, ang_vel):
-        # for point in self.points:
-        #     # nothing to do if velocity is zero already
-        #     if np.allclose(lin_vel, 0):  # and np.isclose(ang_vel, 0):
-        #         break
-        #
-        #     # if velocity is moving toward a detected obstacle point, remove
-        #     # that component
-        #     n = sd.unit(point)
-        #     if n @ lin_vel > 0:
-        #         t = sd.orth(n)
-        #         lin_vel = (lin_vel @ t) * t
-
-        # QP formulation
-        if len(self.points) == 0:
-            return lin_vel, ang_vel
-
-        # define bounding ellipsoid
-        rx = 0.75
-        ry = 0.5
-        A = np.diag([1.0 / rx**2, 1.0 / ry**2])
-        c = np.array([0.25, 0])
-
-        # remove points outside of the collision ellipse
-        points = self.points
-        x = points - c
-
-        # TODO is this actually tangent or is it normal?
-        tangents = x @ A
-        valid = np.sum(x * tangents, axis=1) <= 1
-
-        points = points[valid, :]
-        tangents = tangents[valid, :]
-
-        n = len(points)
-        if n == 0:
-            # none of the points are inside the ellipse
-            return lin_vel, ang_vel
-
-        P = np.eye(3)
-        ξd = np.append(lin_vel, ang_vel)
-        h = np.zeros(n)
-
-        # TODO may be able to vectorize by computing all zs at once
-        S = np.array([[0, -1], [1, 0]])
-        zs = np.sum(tangents * (S @ points.T).T, axis=1)
-        G = np.hstack((tangents, zs[:, None]))
-
-        # G = np.zeros((n, 3))
-        # for i in range(n):
-        #     normal = normals[i, :]
-        #     point = points[i, :]
-        #     z = -normal[0] * point[1] + normal[1] * point[0]
-        #     G[i, :] = np.append(normal, z)
-
-        x = solve_qp(P=P, q=-ξd, G=G, h=h, solver="quadprog")
-        if x is None:
-            print("failed to solve obstacle avoidance QP")
-            return np.zeros(2), 0
-        return x[:2], x[2]
+        return self.collision_ellipse.filter_safe_velocity(
+            lin_vel, ang_vel, self.lidar_points
+        )
 
     def has_target(self):
         return self.target is not None
@@ -540,11 +451,7 @@ def main():
         else:
             raise ValueError(f"Invalid mode: {mode}")
 
-        # if not node.safe_to_move:
-        #     # stop linear motion if it is in forward direction
-        #     if lin_vel_des[0] >= 0:
-        #         lin_vel_des = np.zeros(2)
-        #     ang_vel_des = 0
+        # collision avoidance
         lin_vel_des, ang_vel_des = node.filter_safe_velocity(lin_vel_des, ang_vel_des)
 
         # accelerate toward desired velocity
@@ -559,7 +466,7 @@ def main():
 
         # TODO should I enforce arm velocity limits as well?
 
-        # build the full command
+        # build the full robot joint command
         base_cmd_vel = np.append(lin_vel, ang_vel)
         if args.arm_only:
             base_cmd_vel = np.zeros(3)

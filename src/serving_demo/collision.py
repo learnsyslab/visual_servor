@@ -30,11 +30,6 @@ class CollisionEllipse:
 
         normals = y / np.linalg.norm(y, axis=1)[:, None]
 
-        # NOTE: assume sphere here
-        # dists = np.linalg.norm(x, axis=1) - rx
-        # h = VEL_DAMP_COEFF * dists / VEL_DAMP_INFL
-        # print(f"min dist = {np.min(dists)}")
-
         P = np.eye(3)
         ξd = np.append(lin_vel, ang_vel)
         h = np.zeros(n)
@@ -43,6 +38,10 @@ class CollisionEllipse:
         S = np.array([[0, -1], [1, 0]])
         zs = np.sum(normals * (S @ points.T).T, axis=1)
         G = np.hstack((normals, zs[:, None]))
+
+        # no need to solve the QP if no constraints active
+        if np.all(G @ ξd <= h):
+            return lin_vel, ang_vel
 
         x = solve_qp(P=P, q=-ξd, G=G, h=h, solver=solver)
         if x is None:

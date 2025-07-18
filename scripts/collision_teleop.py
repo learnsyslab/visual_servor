@@ -13,13 +13,7 @@ import IPython
 RATE = 100
 
 LIDAR_OFFSET = np.array([0.25, 0])
-
-# MIN_ANGLE = -np.pi / 4.0
-# MAX_ANGLE = np.pi / 4.0
-#
-# VEL_DAMP_COEFF = 1
-# VEL_DAMP_SAFETY = 0
-# VEL_DAMP_INFL = 0.5
+VEL_MAX = 0.1
 
 
 class CollisionNode:
@@ -42,7 +36,7 @@ class CollisionNode:
     def _teleop_cb(self, msg):
         # desired base velocity
         cmd_vel_des = np.array([msg.linear.x, msg.linear.y, msg.angular.z])
-        self.cmd_vel_des = np.clip(cmd_vel_des, -0.1, 0.1)
+        self.cmd_vel_des = np.clip(cmd_vel_des, -VEL_MAX, VEL_MAX)
 
     def _scan_cb(self, scan):
         """Get ranges and angles from a scan."""
@@ -53,9 +47,9 @@ class CollisionNode:
         angles = np.array([scan.angle_min + i * scan.angle_increment for i in range(n)])
         points = (np.vstack((np.cos(angles), np.sin(angles))) * ranges).T
 
-        # remove points at invalid angles
-        # valid = (angles >= MIN_ANGLE) & (angles <= MAX_ANGLE)
-        points = points[ranges >= scan.range_min, :]
+        # remove invalid points
+        valid = (ranges >= scan.range_min) & (ranges <= scan.range_max)
+        points = points[valid, :]
 
         # relative to the base reference frame
         self.points = points + LIDAR_OFFSET
@@ -85,8 +79,7 @@ def main():
         cmd_vel = np.append(lin_vel, ang_vel)
 
         if not np.allclose(cmd_vel_des, cmd_vel):
-            print(f"desired = {cmd_vel_des}")
-            print(f"actual  = {cmd_vel}")
+            print(f"diff = {cmd_vel_des - cmd_vel}")
 
         robot.publish_cmd_vel(cmd_vel, bodyframe=True)
         rate.sleep()

@@ -42,7 +42,7 @@ def main():
     signal_handler = mm.RobotSignalHandler(robot, args.dry_run)
 
     model = mm.MobileManipulatorKinematics(tool_link_name="pendulum_pivot")
-    stabilizer = sd.PendulumStabilizer(gain=0.5, model=model)
+    stabilizer = sd.PendulumStabilizer(model=model)
 
     print("Waiting for robot...")
     while not rospy.is_shutdown() and not (robot.ready() and tray.ready()):
@@ -51,23 +51,24 @@ def main():
 
     stabilizer.init(robot.q, r_tray_ee)
 
-    t0 = rospy.Time.now().to_sec()
-    while not rospy.is_shutdown():
-        t = rospy.Time.now().to_sec() - t0
-        q = robot.q
+    try:
+        t0 = rospy.Time.now().to_sec()
+        while not rospy.is_shutdown():
+            t = rospy.Time.now().to_sec() - t0
+            q = robot.q
 
-        cmd_vel = stabilizer.update(q, tray.position, dt)
+            cmd_vel = stabilizer.update(q, tray.position, dt)
 
-        # send command to robot
-        if args.dry_run:
-            print(f"cmd_vel = {cmd_vel}")
-        else:
-            robot.publish_cmd_vel(cmd_vel, bodyframe=True)
+            # send command to robot
+            if args.dry_run:
+                print(f"cmd_vel = {cmd_vel}")
+            else:
+                robot.publish_cmd_vel(cmd_vel, bodyframe=True)
 
-        rate.sleep()
-
-    if not args.dry_run:
-        robot.brake()
+            rate.sleep()
+    finally:
+        if not args.dry_run:
+            robot.brake()
 
 
 if __name__ == "__main__":

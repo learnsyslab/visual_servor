@@ -16,7 +16,9 @@ def pendulum_lqr_gain(length, gravity=-9.81):
     A = np.zeros((8, 8))
     A[0:2, 4:6] = np.eye(2)
     A[2:4, 6:8] = np.eye(2)
-    A[6:8, 2:4] = ((rg.skew3(np.cross(ρ, g)) + rg.skew3(ρ) @ rg.skew3(g)) / length)[:2, :2]
+    A[6:8, 2:4] = ((rg.skew3(np.cross(ρ, g)) + rg.skew3(ρ) @ rg.skew3(g)) / length)[
+        :2, :2
+    ]
 
     B = np.zeros((8, 2))
     B[4:6, :] = np.eye(2)
@@ -24,7 +26,7 @@ def pendulum_lqr_gain(length, gravity=-9.81):
 
     # solve for feedback gain u = -K @ x with LQR
     Q = np.eye(8)
-    R = 1 * np.eye(2)
+    R = 0.1 * np.eye(2)
     P = solve_continuous_are(A, B, Q, R)
     return np.linalg.solve(R, B.T @ P)
 
@@ -32,14 +34,12 @@ def pendulum_lqr_gain(length, gravity=-9.81):
 class PendulumStabilizer:
     def __init__(
         self,
-        gain,
         model,
         tray_vel_filter_tau=0.01,
         accel_max=0.5,
         vel_max=0.1,
         joint_vel_max=0.1,
     ):
-        self.gain = gain
         self.model = model
         self.tray_vel_filter = mm.ExponentialSmoother(τ=tray_vel_filter_tau)
 
@@ -109,6 +109,7 @@ class PendulumStabilizer:
         # this is in the world frame
         self.v_ee += dt * u
         self.v_ee = np.clip(self.v_ee, -self.vel_max, self.vel_max)
+        print(f"v_ee = {self.v_ee}")
 
         # diff IK QP
         J = self.model.jacobian(q)
@@ -131,3 +132,34 @@ class PendulumStabilizer:
             return None
         arm_cmd_vel = x[:6]
         return np.concatenate((np.zeros(3), arm_cmd_vel))
+
+
+class PendulumStabilizerTimer:
+    def __init__(self, stabilizer, min_time, max_time, tray_vel_tol):
+        self.stabilizer = stabilizer
+        self.min_time = min_time
+        self.max_time = max_time
+        self.tray_vel_tol = tray_vel_tol
+        self._active = False
+
+    def activate(self):
+        self._active = True
+
+    def is_active(self, t):
+        """Returns True if the stabilizer is still active, False otherwise."""
+        if not self._active:
+            return False
+
+        v = self.stabilizer.tray_vel_filter.x
+
+        # max time has elapsed
+        if t > self.max_time:
+            self._active = False
+        elif (
+            t > self.min_time
+            and v is not None
+            and np.linalg.norm(v) <= self.tray_vel_tol
+        ):
+            print("tray has converged")
+            self._active = False
+        return self._active

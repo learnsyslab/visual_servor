@@ -12,14 +12,17 @@ from cv_bridge import CvBridge
 import sensor_msgs.point_cloud2 as pc2
 import numpy as np
 import ros_numpy
-import serving_demo as sd
 from qpsolvers import solve_qp
+import yaml
 
 import mobile_manipulation_central as mm
+import serving_demo as sd
 
 import IPython
 
-# TODO maybe have difference range fields for different motions
+
+USE_STABILIZER = True
+
 
 MODEL_RGB_IMAGE_WIDTH = 640
 MODEL_RGB_IMAGE_HEIGHT = 480
@@ -55,11 +58,16 @@ MINIMUM_DEPTH = 0.25
 # for home pose
 CONVERGENCE_TOL = 1e-2
 
-# time to wait when serving someone
-# TODO this is way too much time
-STABILIZE_TIME = 10
+# if tray velocity is below this, then we consider it stabilized
+TRAY_VEL_TOL = 0.01
+
+MIN_STABILIZE_TIME = 2
+MAX_STABILIZE_TIME_HOME = 10
+MAX_STABILIZE_TIME_SERVING = 6
 WAIT_TIME = 4
-SERVING_TIME = STABILIZE_TIME + WAIT_TIME
+
+# NOTE: the serving time includes time to decelerate
+SERVING_TIME = MAX_STABILIZE_TIME_SERVING + WAIT_TIME
 
 # arm joint limits
 Q_ELBOW_MIN = np.deg2rad(45)
@@ -99,7 +107,7 @@ class ServingNode:
         self.model = YOLO("../models/custom/weights/last.pt")
         self.bridge = CvBridge()
 
-        self.collision_ellipse = sd.CollisionEllipse(rx=0.8, ry=0.6, center=[0.25, 0])
+        self.collision_ellipse = sd.CollisionEllipse(rx=0.8, ry=0.75, center=[0.25, 0])
 
         self.rgb_image = None
         self.target = None
@@ -140,12 +148,16 @@ class ServingNode:
             self.target_depth = None
             return
 
+        # TODO actually need to lock the target/mask
+
         data = ros_numpy.numpify(msg)
         depth = data["z"]
         depth = cv2.resize(depth, MODEL_RGB_IMAGE_SIZE)
-        target_depth = np.median(depth[self.target.mask])
-        if target_depth >= MINIMUM_DEPTH:
-            self.target_depth = target_depth
+        depth = depth[self.target.mask]
+        depth = depth[depth >= MINIMUM_DEPTH]
+        if depth.size > 0:
+            self.target_depth = np.median(depth)
+            print(f"depth = {self.target_depth}")
 
     def _rgb_cb(self, msg):
         rgb_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
@@ -321,6 +333,13 @@ def main():
     sd_path = rospack.get_path("serving_demo")
     home = mm.load_home_position(name="default", path=sd_path + "/config/home.yaml")
 
+    # load pendulum calibration
+    # TODO clean up?
+    calib_path = sd_path + "/config/pendulum_calibration.yaml"
+    with open(calib_path) as f:
+        calib = yaml.safe_load(f)
+        r_tray_ee = np.array(calib["r_tray_ee"])
+
     rospy.init_node("serving_node", disable_signals=True)
     node = ServingNode()
 
@@ -334,14 +353,29 @@ def main():
     tray = mm.ViconObjectInterface("ThingRoundTray")
     signal_handler = mm.RobotSignalHandler(robot, args.dry_run)
 
-    model = mm.MobileManipulatorKinematics(tool_link_name="ur10_arm_tool0")
-    stabilizer = sd.PendulumStabilizer(gain=0.5, model=model)
+    model = mm.MobileManipulatorKinematics(tool_link_name="pendulum_pivot")
+    stabilizer = sd.PendulumStabilizer(model=model)
+    home_stabilizer_timer = sd.PendulumStabilizerTimer(
+        stabilizer=stabilizer,
+        min_time=MIN_STABILIZE_TIME,
+        max_time=MAX_STABILIZE_TIME_HOME,
+        tray_vel_tol=TRAY_VEL_TOL,
+    )
+    serving_stabilizer_timer = sd.PendulumStabilizerTimer(
+        stabilizer=stabilizer,
+        min_time=MIN_STABILIZE_TIME,
+        max_time=MAX_STABILIZE_TIME_SERVING,
+        tray_vel_tol=TRAY_VEL_TOL,
+    )
 
     # wait until robot feedback has been received
     print("Waiting for robot...")
     while not rospy.is_shutdown() and not robot.ready():
         rate.sleep()
     print("...robot ready.")
+
+    stabilizer.init(q0=robot.q, r_tray_ee=r_tray_ee)
+    home_stabilizer_timer.activate()
 
     mode = SystemMode.HOME
     lin_vel = np.zeros(2)
@@ -352,139 +386,151 @@ def main():
     # time at which the current mode started
     mode_start_time = 0
 
-    t0 = rospy.Time.now().to_sec()
-    while not rospy.is_shutdown():
-        t = rospy.Time.now().to_sec() - t0
-        mode_t = t - mode_start_time
-        q = robot.q
+    # wrap the whole thing in try/finally to ensure we actually send a brake
+    # command to the robot
+    try:
+        t0 = rospy.Time.now().to_sec()
+        t = t0
+        while not rospy.is_shutdown():
+            t_prev = t
+            t = rospy.Time.now().to_sec() - t0
+            print(f"dt = {t - t_prev}")
+            mode_t = t - mode_start_time
+            q = robot.q
 
-        if (
-            args.display
-            and node.rgb_image is not None
-            and t - last_display_time >= DISPLAY_TIME_INTERVAL
-        ):
-            last_display_time = t
-            image = node.annotated_image()
-            cv2.imshow("image", image)
-            if cv2.waitKey(1) & 0xFF == ord(" "):
-                break
+            if (
+                args.display
+                and node.rgb_image is not None
+                and t - last_display_time >= DISPLAY_TIME_INTERVAL
+            ):
+                last_display_time = t
+                image = node.annotated_image()
+                cv2.imshow("image", image)
+                if cv2.waitKey(1) & 0xFF == ord(" "):
+                    break
 
-        prev_mode = mode
+            prev_mode = mode
 
-        # select current mode
-        if mode == SystemMode.SERVING and mode_t <= SERVING_TIME:
-            # stay in serving mode until time is up
-            pass
-        elif (
-            mode == SystemMode.FOLLOWING_TARGET
-            and node.target_depth is not None
-            and node.target_depth <= 1
-        ):
-            stabilizer.reset()
-            mode = SystemMode.SERVING
-        elif node.has_target():
-            mode = SystemMode.FOLLOWING_TARGET
-        elif np.linalg.norm(home[:2] - q[:2]) <= CONVERGENCE_TOL:
-            mode = SystemMode.HOME
-        elif mode != SystemMode.HOME:
-            # don't switch to moving home when already at home: this can be
-            # triggered by small amounts of noise in the position estimate
-            mode = SystemMode.MOVING_HOME
-
-        # mode switch
-        if mode != prev_mode:
-            mode_start_time = t
-            print(f"mode = {mode}")
-        prev_mode = mode
-
-        # move based on mode
-        lin_vel_des = np.zeros(2)
-        ang_vel_des = 0
-        arm_cmd_vel = np.zeros(6)
-
-        if mode == SystemMode.HOME:
-            arm_q_err = home[3:] - q[3:]
-            # if mode_t <= STABILIZE_TIME:
-            #     x = stabilizer.update(q, tray.position, dt)
-            #     if x is None:
-            #         print("failed to solve QP")
-            #         break
-            #     arm_cmd_vel = x[3:]
-            # elif np.linalg.norm(arm_q_err) > CONVERGENCE_TOL:
-            #     # move arm back to home after stabilizing
-            #     arm_cmd_vel = Kp * arm_q_err
-        elif mode == SystemMode.SERVING:
-            # TODO this now includes the deceleration time
-            if not (np.allclose(lin_vel, 0) and np.isclose(ang_vel, 0)):
+            # select current mode
+            if mode == SystemMode.SERVING and mode_t <= SERVING_TIME:
+                # stay in serving mode until time is up
                 pass
-                # keep pushing back the start time until base has stopped
-                # serving_start = t
-            # elif mode_t <= STABILIZE_TIME:
-            #     x = stabilizer.update(q, tray.position, dt)
-            #     if x is None:
-            #         print("failed to solve QP")
-            #         break
-            #     arm_cmd_vel = x[3:]
-        elif mode == SystemMode.MOVING_HOME:
-            error = home[:3] - q[:3]
-            error[2] = mm.wrap_to_pi(error[2])
-            vd = Kp * error
+            elif (
+                mode == SystemMode.FOLLOWING_TARGET
+                and node.target_depth is not None
+                and node.target_depth <= 1.5
+            ):
+                print(f"target depth = {node.target_depth}")
+                stabilizer.reset(q)
+                serving_stabilizer_timer.activate()
+                mode = SystemMode.SERVING
+            elif node.has_target():
+                mode = SystemMode.FOLLOWING_TARGET
+            elif np.linalg.norm(home[:2] - q[:2]) <= CONVERGENCE_TOL:
+                stabilizer.reset(q)
+                home_stabilizer_timer.activate()
+                mode = SystemMode.HOME
+            elif mode != SystemMode.HOME:
+                # don't switch to moving home when already at home: this can be
+                # triggered by small amounts of noise in the position estimate
+                mode = SystemMode.MOVING_HOME
 
-            # rotate into the body frame
-            C_bw = rotz(-q[2])
-            vd = C_bw @ vd
+            # mode switch
+            if mode != prev_mode:
+                mode_start_time = t
+                mode_t = 0
+                print(f"mode = {mode}")
+            prev_mode = mode
 
-            lin_vel_des = vd[:2]
-            ang_vel_des = 0  # keep current angle
+            # move based on mode
+            lin_vel_des = np.zeros(2)
+            ang_vel_des = 0
+            arm_cmd_vel = np.zeros(6)
 
-        elif mode == SystemMode.FOLLOWING_TARGET:
-            # base motion
-            ang_err = node.compute_angular_error()
-            vx = LIN_VEL_MAX * (1 - np.abs(ang_err))
-            lin_vel_des = np.array([vx, 0])
-            ang_vel_des = Kω * ang_err
+            if mode == SystemMode.HOME:
+                arm_q_err = home[3:] - q[3:]
+                if USE_STABILIZER and home_stabilizer_timer.is_active(mode_t):
+                    x = stabilizer.update(q, tray.position, dt)
+                    if x is None:
+                        print("failed to solve stabilizer QP")
+                        arm_cmd_vel = np.zeros(6)
+                    else:
+                        arm_cmd_vel = x[3:]
+                # TODO
+                # elif np.linalg.norm(arm_q_err) > CONVERGENCE_TOL:
+                #     # move arm back to home after stabilizing
+                #     arm_cmd_vel = Kp * arm_q_err
+            elif mode == SystemMode.SERVING:
+                if USE_STABILIZER and serving_stabilizer_timer.is_active(mode_t):
+                    x = stabilizer.update(q, tray.position, dt)
+                    if x is None:
+                        print("failed to solve stabilizer QP")
+                        arm_cmd_vel = np.zeros(6)
+                    else:
+                        arm_cmd_vel = x[3:]
+            elif mode == SystemMode.MOVING_HOME:
+                error = home[:3] - q[:3]
+                error[2] = mm.wrap_to_pi(error[2])
+                vd = Kp * error
 
-            # arm motion
-            height_err = node.compute_height_error()
-            vz_des = Kz * height_err
-            arm_cmd_vel = servo_arm_up(q[3:], vz_des, dt)
-        else:
-            raise ValueError(f"Invalid mode: {mode}")
+                # rotate into the body frame
+                C_bw = rotz(-q[2])
+                vd = C_bw @ vd
 
-        # collision avoidance
-        lin_vel_des, ang_vel_des = node.filter_safe_velocity(lin_vel_des, ang_vel_des)
+                lin_vel_des = vd[:2]
+                ang_vel_des = 0  # keep current angle
 
-        # accelerate toward desired velocity
-        lin_vel = change_velocity(lin_vel, lin_vel_des, LIN_ACC, dt)
-        ang_vel = change_velocity(ang_vel, ang_vel_des, ANG_ACC, dt)
+            elif mode == SystemMode.FOLLOWING_TARGET:
+                # base motion
+                ang_err = node.compute_angular_error()
+                vx = LIN_VEL_MAX * (1 - np.abs(ang_err))
+                lin_vel_des = np.array([vx, 0])
+                ang_vel_des = Kω * ang_err
 
-        # enforce velocity limits
-        lin_vel_norm = np.linalg.norm(lin_vel)
-        if lin_vel_norm > LIN_VEL_MAX:
-            lin_vel = LIN_VEL_MAX * lin_vel / lin_vel_norm
-        ang_vel = np.clip(ang_vel, -ANG_VEL_MAX, ANG_VEL_MAX)
+                # arm motion
+                height_err = node.compute_height_error()
+                vz_des = Kz * height_err
+                arm_cmd_vel = servo_arm_up(q[3:], vz_des, dt)
+            else:
+                raise ValueError(f"Invalid mode: {mode}")
 
-        # TODO should I enforce arm velocity limits as well?
+            # collision avoidance
+            lin_vel_des, ang_vel_des = node.filter_safe_velocity(lin_vel_des, ang_vel_des)
 
-        # build the full robot joint command
-        base_cmd_vel = np.append(lin_vel, ang_vel)
-        if args.arm_only:
-            base_cmd_vel = np.zeros(3)
-        cmd_vel = np.concatenate((base_cmd_vel, arm_cmd_vel))
+            # accelerate toward desired velocity
+            lin_vel = change_velocity(lin_vel, lin_vel_des, LIN_ACC, dt)
+            ang_vel = change_velocity(ang_vel, ang_vel_des, ANG_ACC, dt)
 
-        # send command to the robot
-        if args.dry_run:
-            # print(f"q = {q}")
-            # print(f"cmd_vel = {cmd_vel}")
-            pass
-        else:
-            robot.publish_cmd_vel(cmd_vel, bodyframe=True)
+            # enforce velocity limits
+            lin_vel_norm = np.linalg.norm(lin_vel)
+            if lin_vel_norm > LIN_VEL_MAX:
+                lin_vel = LIN_VEL_MAX * lin_vel / lin_vel_norm
+            ang_vel = np.clip(ang_vel, -ANG_VEL_MAX, ANG_VEL_MAX)
 
-        rate.sleep()
+            # TODO should I enforce arm velocity limits as well?
 
-    if not args.dry_run:
-        robot.brake()
-    cv2.destroyAllWindows()
+            # build the full robot joint command
+            base_cmd_vel = np.append(lin_vel, ang_vel)
+            if args.arm_only:
+                base_cmd_vel = np.zeros(3)
+            cmd_vel = np.concatenate((base_cmd_vel, arm_cmd_vel))
+
+            print(arm_cmd_vel)
+
+            # send command to the robot
+            if args.dry_run:
+                # print(f"q = {q}")
+                # print(f"cmd_vel = {cmd_vel}")
+                pass
+            else:
+                robot.publish_cmd_vel(cmd_vel, bodyframe=True)
+
+            rate.sleep()
+    finally:
+        if not args.dry_run:
+            print("brake")
+            robot.brake()
+        cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":

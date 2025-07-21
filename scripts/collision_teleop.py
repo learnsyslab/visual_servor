@@ -15,6 +15,8 @@ RATE = 100
 LIDAR_OFFSET = np.array([0.25, 0])
 VEL_MAX = 0.1
 
+NUM_COLLISION_POINTS = 20
+
 
 class CollisionNode:
     def __init__(self):

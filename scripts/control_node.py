@@ -34,6 +34,7 @@ RATE = 100
 # lidar offset from base origin
 # TODO: tune this
 LIDAR_OFFSET = np.array([0.25, 0])
+NUM_COLLISION_POINTS = 20
 
 # only display a new image after this much time has elapsed
 DISPLAY_TIME_INTERVAL = 0.1
@@ -84,48 +85,19 @@ class SystemMode(Enum):
     SERVING = 3
 
 
-class Person:
-    def __init__(self, cls, contours):
-        self.hand_up = cls == 0
-
-        # flip because width = columns and height = rows
-        self.mask = np.zeros(np.flip(MODEL_RGB_IMAGE_SIZE), dtype=np.uint8)
-        cv2.drawContours(self.mask, [contours], -1, 1, cv2.FILLED)
-        self.mask = self.mask.astype(bool)
-
-        xs, ys = np.where(self.mask.T)
-        x = np.median(xs)
-
-        # we choose a lower quantile for y because we want to aim closer to the
-        # head (for servoing in the z-direction)
-        y = np.quantile(ys, 0.25)
-        self.center = np.array([x, y], dtype=np.int32)
-
-
-class ServingNode:
+class ControlNode:
     def __init__(self):
-        self.model = YOLO("../models/custom/weights/last.pt")
-        self.bridge = CvBridge()
-
         self.collision_ellipse = sd.CollisionEllipse(rx=0.8, ry=0.75, center=[0.25, 0])
 
-        self.rgb_image = None
         self.target = None
         self.target_depth = None
-        self.people = []
         self.lidar_points = []
 
         self.scan_sub = rospy.Subscriber(
             "/front/scan", LaserScan, self._scan_cb, queue_size=1
         )
-        self.rgb_sub = rospy.Subscriber(
-            "/camera/color/image_raw", Image, self._rgb_cb, queue_size=1
-        )
-        self.pointcloud_sub = rospy.Subscriber(
-            "/camera/depth_registered/points",
-            PointCloud2,
-            self._pointcloud_cb,
-            queue_size=1,
+        self.target_sub = rospy.Subscriber(
+            "/serving/target", Target, self._target_cb, queue_size=1
         )
 
     def _scan_cb(self, scan):
@@ -135,79 +107,14 @@ class ServingNode:
         angles = np.array([scan.angle_min + i * scan.angle_increment for i in range(n)])
         lidar_points = (np.vstack((np.cos(angles), np.sin(angles))) * ranges).T
 
+        # TODO filter to only keep N buckets
+
         # remove invalid points
         valid = (ranges >= scan.range_min) & (ranges <= scan.range_max)
         lidar_points = lidar_points[valid, :]
 
         # relative to the base reference frame
         self.lidar_points = lidar_points + LIDAR_OFFSET
-
-    def _pointcloud_cb(self, msg):
-        # we don't care about depth if there is no target
-        if not self.has_target():
-            self.target_depth = None
-            return
-
-        # TODO actually need to lock the target/mask
-
-        data = ros_numpy.numpify(msg)
-        depth = data["z"]
-        depth = cv2.resize(depth, MODEL_RGB_IMAGE_SIZE)
-        depth = depth[self.target.mask]
-        depth = depth[depth >= MINIMUM_DEPTH]
-        if depth.size > 0:
-            self.target_depth = np.median(depth)
-            print(f"depth = {self.target_depth}")
-
-    def _rgb_cb(self, msg):
-        rgb_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-        self.rgb_image = cv2.resize(rgb_image, MODEL_RGB_IMAGE_SIZE)
-
-        results = self.model.predict(
-            self.rgb_image, max_det=MAX_PEOPLE, conf=DET_CONFIDENCE, verbose=False
-        )
-
-        # TODO we may want to do some filtering here
-        n_det = len(results[0].boxes.cls)
-        hand_up_ids = []
-        people = []
-
-        for i in range(n_det):
-            cls = results[0].boxes.cls[i].cpu().numpy()
-            contours = np.int32([results[0].masks.xy[i]])
-            person = Person(cls, contours)
-            if person.hand_up:
-                hand_up_ids.append(i)
-            people.append(person)
-
-        # no one has their hand up
-        n_hand_up = len(hand_up_ids)
-        if n_hand_up == 0:
-            self.people = people
-            self.target = None
-            return
-
-        # one target, no ambiguity
-        if n_hand_up == 1:
-            self.people = people
-            self.target = people[hand_up_ids[0]]
-            return
-
-        # multiple targets
-        if self.target is not None:
-            # if there is an existing target, choose that one
-            dists = np.array(
-                [
-                    np.linalg.norm(self.target.center - people[i].center)
-                    for i in hand_up_ids
-                ]
-            )
-            target_id = hand_up_ids[np.argmin(dists)]
-        else:
-            # otherwise, just pick the first one
-            target_id = hand_up_ids[0]
-        self.target = people[target_id]
-        self.people = people
 
     def filter_safe_velocity(self, lin_vel, ang_vel):
         return self.collision_ellipse.filter_safe_velocity(

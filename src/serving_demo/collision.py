@@ -10,6 +10,9 @@ class CollisionEllipse:
         self.ell_shape = np.diag([1.0 / rx**2, 1.0 / ry**2])
         self.ell_center = center
 
+    def _bucket_points(points, n=20):
+        pass
+
     def filter_safe_velocity(self, lin_vel, ang_vel, points, solver="quadprog"):
         if len(points) == 0:
             return lin_vel, ang_vel
@@ -19,7 +22,6 @@ class CollisionEllipse:
         y = x @ self.ell_shape
         valid = np.sum(x * y, axis=1) <= 1
 
-        x = x[valid, :]
         y = y[valid, :]
         points = points[valid, :]
 

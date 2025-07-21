@@ -6,5 +6,8 @@
   <maintainer email="adam.heins@robotics.utias.utoronto.ca">Adam Heins</maintainer>
   <license>MIT</license>
 
+  <build_depend>message_generation</build_depend>
+  <exec_depend>message_runtime</exec_depend>
+
   <buildtool_depend>catkin</buildtool_depend>
 </package>

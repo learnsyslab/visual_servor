@@ -1,9 +1,9 @@
-# set false if there is no target
-bool active
+bool hand_up
 
 # target point in the image
-float64 x
-float64 y
+int32 x
+int32 y
 
 # depth
+bool depth_valid
 float64 depth

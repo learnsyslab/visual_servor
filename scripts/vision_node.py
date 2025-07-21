@@ -14,13 +14,6 @@ import ros_numpy
 import serving_demo as sd
 from serving_demo.msg import Target
 
-import IPython
-
-
-MODEL_RGB_IMAGE_WIDTH = 640
-MODEL_RGB_IMAGE_HEIGHT = 480
-MODEL_RGB_IMAGE_SIZE = (MODEL_RGB_IMAGE_WIDTH, MODEL_RGB_IMAGE_HEIGHT)
-
 # control rate (Hz)
 RATE = 20
 
@@ -36,60 +29,16 @@ DET_CONFIDENCE = 0.5
 # weight for exponential filtering of the image detections
 # FILTER_WEIGHT = 0.25
 
-# minimum valid depth reading of the camera
-MINIMUM_DEPTH = 0.25
-
-
-class Person:
-    def __init__(self, hand_up=False, center=None):
-        self.hand_up = hand_up
-
-        if center is None:
-            center = np.zeros(2, dtype=np.int32)
-        self.center = center
-
-        self.depth = 0
-        self._depth_computed = False
-
-    @classmethod
-    def from_contours(cls, class_label, contours):
-        hand_up = class_label == 0
-
-        # flip because width = columns and height = rows
-        self.mask = np.zeros(np.flip(MODEL_RGB_IMAGE_SIZE), dtype=np.uint8)
-        cv2.drawContours(self.mask, [contours], -1, 1, cv2.FILLED)
-        self.mask = self.mask.astype(bool)
-
-        xs, ys = np.where(self.mask.T)
-        x = np.median(xs)
-
-        # we choose a lower quantile for y because we want to aim closer to the
-        # head (for servoing in the z-direction)
-        y = np.quantile(ys, 0.25)
-        center = np.array([x, y], dtype=np.int32)
-
-        return cls(hand_up=hand_up, center=center)
-
-    def compute_depth(self, pc_depth):
-        depth = cv2.resize(pc_depth, MODEL_RGB_IMAGE_SIZE)
-        depth = depth[self.target.mask]
-        depth = depth[depth >= MINIMUM_DEPTH]
-        if depth.size > 0:
-            self._depth_computed = True
-            self.depth = np.median(depth)
-            print(f"depth = {self.depth}")
-
-    def active(self):
-        return self.hand_up and self._depth_computed
-
 
 class VisionNode:
     def __init__(self):
         self.model = YOLO("../models/custom/weights/last.pt")
         self.bridge = CvBridge()
 
-        self.rgb_image = np.zeros((MODEL_RGB_IMAGE_HEIGHT, MODEL_RGB_IMAGE_WIDTH, 3))
-        self.target = Person()
+        self.rgb_image = np.zeros(
+            (sd.MODEL_RGB_IMAGE_HEIGHT, sd.MODEL_RGB_IMAGE_WIDTH, 3)
+        )
+        self.target = sd.Person()
         self.people = []
 
         self.target_pub = rospy.Publisher("/serving/target", Target, queue_size=1)
@@ -106,11 +55,11 @@ class VisionNode:
 
     def _pointcloud_cb(self, msg):
         data = ros_numpy.numpify(msg)
-        self.target.compute_depth(data["z"])
+        self.target.update_depth(data["z"])
 
     def _rgb_cb(self, msg):
         rgb_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-        self.rgb_image = cv2.resize(rgb_image, MODEL_RGB_IMAGE_SIZE)
+        self.rgb_image = cv2.resize(rgb_image, sd.MODEL_RGB_IMAGE_SIZE)
 
         results = self.model.predict(
             self.rgb_image, max_det=MAX_PEOPLE, conf=DET_CONFIDENCE, verbose=False
@@ -124,7 +73,7 @@ class VisionNode:
         for i in range(n_det):
             cls = results[0].boxes.cls[i].cpu().numpy()
             contours = np.int32([results[0].masks.xy[i]])
-            person = Person.from_contours(cls, contours)
+            person = sd.Person.from_contours(cls, contours)
             if person.hand_up:
                 hand_up_ids.append(i)
             people.append(person)
@@ -173,9 +122,10 @@ class VisionNode:
     def publish_target(self):
         """Publish info about the target observed with the RGB-D camera."""
         msg = Target()
-        msg.active = self.target.active()
+        msg.hand_up = self.target.hand_up
         msg.x = self.target.center[0]
         msg.y = self.target.center[1]
+        msg.depth_valid = self.target.depth_valid
         msg.depth = self.target.depth
         self.target_pub.publish(msg)
 

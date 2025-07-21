@@ -24,10 +24,6 @@ import IPython
 USE_STABILIZER = True
 
 
-MODEL_RGB_IMAGE_WIDTH = 640
-MODEL_RGB_IMAGE_HEIGHT = 480
-MODEL_RGB_IMAGE_SIZE = (MODEL_RGB_IMAGE_WIDTH, MODEL_RGB_IMAGE_HEIGHT)
-
 # control rate (Hz)
 RATE = 100
 
@@ -36,25 +32,14 @@ RATE = 100
 LIDAR_OFFSET = np.array([0.25, 0])
 NUM_COLLISION_POINTS = 20
 
-# only display a new image after this much time has elapsed
-DISPLAY_TIME_INTERVAL = 0.1
-
 # base motion limits
 ANG_VEL_MAX = 0.2
 ANG_ACC = 0.25
 LIN_VEL_MAX = 0.3
 LIN_ACC = 0.15
 
-# maximum number of detected people
-MAX_PEOPLE = 5
-
-# detection confidence
-DET_CONFIDENCE = 0.5
-
 # weight for exponential filtering of the image detections
 # FILTER_WEIGHT = 0.25
-
-MINIMUM_DEPTH = 0.25
 
 # for home pose
 CONVERGENCE_TOL = 1e-2
@@ -89,8 +74,7 @@ class ControlNode:
     def __init__(self):
         self.collision_ellipse = sd.CollisionEllipse(rx=0.8, ry=0.75, center=[0.25, 0])
 
-        self.target = None
-        self.target_depth = None
+        self.target = sd.Person()
         self.lidar_points = []
 
         self.scan_sub = rospy.Subscriber(
@@ -100,6 +84,14 @@ class ControlNode:
             "/serving/target", Target, self._target_cb, queue_size=1
         )
 
+    def _target_sub(self, msg):
+        self.target = sd.Person(
+            hand_up=msg.hand_up,
+            center=[msg.x, msg.y],
+            depth=msg.depth,
+            depth_valid=msg.depth_valid,
+        )
+
     def _scan_cb(self, scan):
         """Get ranges and angles from a scan."""
         n = len(scan.ranges)
@@ -107,7 +99,10 @@ class ControlNode:
         angles = np.array([scan.angle_min + i * scan.angle_increment for i in range(n)])
         lidar_points = (np.vstack((np.cos(angles), np.sin(angles))) * ranges).T
 
-        # TODO filter to only keep N buckets
+        # wrt the center of the collision ellipse
+        lidar_points = lidar_points + LIDAR_OFFSET
+
+        dists = self.collision_ellipse.squared_dist(lidar_points)
 
         # remove invalid points
         valid = (ranges >= scan.range_min) & (ranges <= scan.range_max)
@@ -121,42 +116,29 @@ class ControlNode:
             lin_vel, ang_vel, self.lidar_points
         )
 
-    def has_target(self):
-        return self.target is not None
-
     def compute_angular_error(self):
-        if self.target is None:
+        if not self.target.hand_up:
             return 0
 
-        target = self.target.center
-        w2 = MODEL_RGB_IMAGE_WIDTH / 2
-        error = w2 - target[0]
+        x = self.target.center[0]
+        w2 = sd.MODEL_RGB_IMAGE_WIDTH / 2
+        error = w2 - x[0]
 
         # normalize to [-1, 1]
         error /= w2
         return error
 
     def compute_height_error(self):
-        if self.target is None:
+        if not self.target.hand_up:
             return 0
 
-        target = self.target.center
-        h2 = MODEL_RGB_IMAGE_HEIGHT / 2
-        error = h2 - target[1]
+        y = self.target.center[1]
+        h2 = sd.MODEL_RGB_IMAGE_HEIGHT / 2
+        error = h2 - y
 
         # normalize to [-1, 1]
         error /= h2
         return error
-
-    def annotated_image(self):
-        image = self.rgb_image.copy()
-        for person in self.people:
-            if person.hand_up:
-                image[person.mask, :] = 0
-            else:
-                image[person.mask, :] = 255
-            cv2.circle(image, person.center, 5, [0, 0, 255], -1)
-        return image
 
 
 def change_velocity(v, vd, max_a, dt):
@@ -229,9 +211,6 @@ def main():
     parser.add_argument(
         "--dry-run", action="store_true", help="Don't send commands to the robot."
     )
-    parser.add_argument(
-        "--display", action="store_true", help="Display the annotated image."
-    )
     parser.add_argument("--arm-only", action="store_true", help="Only move the arm.")
     args = parser.parse_args()
 
@@ -288,7 +267,6 @@ def main():
     lin_vel = np.zeros(2)
     ang_vel = 0
     cmd_vel = np.zeros_like(robot.q)
-    last_display_time = 0
 
     # time at which the current mode started
     mode_start_time = 0
@@ -302,20 +280,9 @@ def main():
             t_prev = t
             t = rospy.Time.now().to_sec() - t0
             print(f"dt = {t - t_prev}")
+
             mode_t = t - mode_start_time
             q = robot.q
-
-            if (
-                args.display
-                and node.rgb_image is not None
-                and t - last_display_time >= DISPLAY_TIME_INTERVAL
-            ):
-                last_display_time = t
-                image = node.annotated_image()
-                cv2.imshow("image", image)
-                if cv2.waitKey(1) & 0xFF == ord(" "):
-                    break
-
             prev_mode = mode
 
             # select current mode
@@ -324,14 +291,14 @@ def main():
                 pass
             elif (
                 mode == SystemMode.FOLLOWING_TARGET
-                and node.target_depth is not None
-                and node.target_depth <= 1.5
+                and node.target.depth_valid
+                and node.target.depth <= 1.5
             ):
-                print(f"target depth = {node.target_depth}")
+                print(f"target depth = {node.target.depth}")
                 stabilizer.reset(q)
                 serving_stabilizer_timer.activate()
                 mode = SystemMode.SERVING
-            elif node.has_target():
+            elif node.target.hand_up:
                 mode = SystemMode.FOLLOWING_TARGET
             elif np.linalg.norm(home[:2] - q[:2]) <= CONVERGENCE_TOL:
                 stabilizer.reset(q)
@@ -402,7 +369,9 @@ def main():
                 raise ValueError(f"Invalid mode: {mode}")
 
             # collision avoidance
-            lin_vel_des, ang_vel_des = node.filter_safe_velocity(lin_vel_des, ang_vel_des)
+            lin_vel_des, ang_vel_des = node.filter_safe_velocity(
+                lin_vel_des, ang_vel_des
+            )
 
             # accelerate toward desired velocity
             lin_vel = change_velocity(lin_vel, lin_vel_des, LIN_ACC, dt)

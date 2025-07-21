@@ -13,6 +13,11 @@ class CollisionEllipse:
     def _bucket_points(points, n=20):
         pass
 
+    def squared_dist(points):
+        x = points - self.ell_center
+        y = x @ self.ell_shape
+        return np.sum(x * y, axis=1)
+
     def filter_safe_velocity(self, lin_vel, ang_vel, points, solver="quadprog"):
         if len(points) == 0:
             return lin_vel, ang_vel

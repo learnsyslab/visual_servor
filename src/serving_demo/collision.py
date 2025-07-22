@@ -10,12 +10,12 @@ class CollisionEllipse:
         self.ell_shape = np.diag([1.0 / rx**2, 1.0 / ry**2])
         self.ell_center = center
 
-    def squared_dist(points):
+    def squared_dist(self, points):
         x = points - self.ell_center
         y = x @ self.ell_shape
         return np.sum(x * y, axis=1)
 
-    def process_scan(scan, lidar_offset=None, num_buckets=20):
+    def process_scan(self, scan, lidar_offset=None, num_buckets=20):
         if lidar_offset is None:
             lidar_offset = np.zeros(2)
 
@@ -37,7 +37,7 @@ class CollisionEllipse:
         dists[~valid] = np.inf
 
         bucketed_points = []
-        for i in range(start=0, stop=n, step=num_per_bucket):
+        for i in range(num_buckets):
             s = i * num_per_bucket
             e = min((i + 1) * num_per_bucket, n)
             min_idx = np.argmin(dists[s:e]) + s
@@ -60,17 +60,6 @@ class CollisionEllipse:
             The points with which to avoid collisions. It is assumed that these
             have already been processed to remove points outside the ellipsoid.
         """
-        # if len(points) == 0:
-        #     return lin_vel, ang_vel
-        #
-        # # remove points outside of the influence ellipse
-        # x = points - self.ell_center
-        # y = x @ self.ell_shape
-        # valid = np.sum(x * y, axis=1) <= 1
-        #
-        # y = y[valid, :]
-        # points = points[valid, :]
-
         n = len(points)
         if n == 0:
             return lin_vel, ang_vel
@@ -92,7 +81,7 @@ class CollisionEllipse:
         if np.all(G @ ξd <= h):
             return lin_vel, ang_vel
 
-        # TODO do I need to use a dedicated class?
+        # TODO do I need to use a dedicated class to improve speed?
         x = solve_qp(P=P, q=-ξd, G=G, h=h, solver=solver)
         if x is None:
             print("failed to solve obstacle avoidance QP")

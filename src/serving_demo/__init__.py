@@ -1,6 +1,7 @@
+from .collision import CollisionEllipse
+from .motion import change_velocity, decelerate
 from .stabilizer import PendulumStabilizer, PendulumStabilizerTimer, pendulum_lqr_gain
 from .utils import unit, orth
-from .collision import CollisionEllipse
 from .vision import (
     Person,
     MODEL_RGB_IMAGE_WIDTH,

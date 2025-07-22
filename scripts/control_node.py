@@ -19,7 +19,7 @@ import IPython
 
 
 USE_STABILIZER = True
-USE_COLLISION_AVOIDANCE = False
+USE_COLLISION_AVOIDANCE = True
 
 
 # control rate (Hz)
@@ -101,39 +101,6 @@ class ControlNode:
             scan, lidar_offset=LIDAR_OFFSET, num_buckets=NUM_COLLISION_POINTS
         )
 
-        # n = len(scan.ranges)
-        # num_per_bucket = n // NUM_COLLISION_POINTS
-        #
-        # ranges = np.array(scan.ranges)
-        # angles = np.array([scan.angle_min + i * scan.angle_increment for i in range(n)])
-        # points = (np.vstack((np.cos(angles), np.sin(angles))) * ranges).T
-        #
-        # # wrt the center of the collision ellipse
-        # # points = points + LIDAR_OFFSET
-        #
-        # # compute squared Mahalanobis distances
-        # # dists = self.collision_ellipse.squared_dist(points)
-        #
-        # # remove invalid points
-        # # TODO should we just filter out points not in the ellipsoid right
-        # # here?
-        # valid = (ranges >= scan.range_min) & (ranges <= scan.range_max)
-        # points = points[valid, :]
-        # # dists[~valid] = np.inf
-        #
-        # # bucketed_points = []
-        # # for i in range(start=0, stop=n, step=num_per_bucket):
-        # #     s = i * num_per_bucket
-        # #     e = min((i + 1) * num_per_bucket, n)
-        # #     min_idx = np.argmin(dists[s:e]) + s
-        # #     min_dist = dists[min_idx]
-        # #     if min_dist <= 1:
-        # #         bucketed_points.append(points[min_idx, :])
-        # # self.points = bucketed_points
-        #
-        # # relative to the base reference frame
-        # self.points = points + LIDAR_OFFSET
-
     def filter_safe_velocity(self, lin_vel, ang_vel):
         if not USE_COLLISION_AVOIDANCE:
             return lin_vel, ang_vel
@@ -147,7 +114,7 @@ class ControlNode:
 
         x = self.target.center[0]
         w2 = sd.MODEL_RGB_IMAGE_WIDTH / 2
-        error = w2 - x[0]
+        error = w2 - x
 
         # normalize to [-1, 1]
         error /= w2
@@ -164,30 +131,6 @@ class ControlNode:
         # normalize to [-1, 1]
         error /= h2
         return error
-
-
-def change_velocity(v, vd, max_a, dt):
-    """Accelerate to a desired velocity, with limits."""
-    scalar = np.isscalar(v)
-    v = np.atleast_1d(v)
-    vd = np.atleast_1d(vd)
-
-    error = vd - v
-    new_v = v + dt * np.sign(error) * max_a
-    new_error = vd - new_v
-
-    crossed_vd = np.sign(error) != np.sign(new_error)
-
-    v = new_v
-    v[crossed_vd] = vd[crossed_vd]
-    if scalar:
-        return v[0]
-    return v
-
-
-def decelerate(v, max_a, dt):
-    """Decelerate to zero velocity subject to maximum acceleration."""
-    return change_velocity(v=v, vd=np.zeros_like(v), max_a=max_a, dt=dt)
 
 
 def servo_arm_up(q, vz, dt):
@@ -331,7 +274,10 @@ def main():
                 mode = SystemMode.SERVING
             elif node.target.hand_up:
                 mode = SystemMode.FOLLOWING_TARGET
-            elif np.linalg.norm(home[:2] - q[:2]) <= CONVERGENCE_TOL:
+            elif (
+                mode == SystemMode.MOVING_HOME
+                and np.linalg.norm(home[:2] - q[:2]) <= CONVERGENCE_TOL
+            ):
                 stabilizer.reset(q)
                 home_stabilizer_timer.activate()
                 mode = SystemMode.HOME
@@ -356,7 +302,6 @@ def main():
                 arm_q_err = home[3:] - q[3:]
                 if USE_STABILIZER and home_stabilizer_timer.is_active(mode_t):
                     x = stabilizer.update(q, tray.position, dt)
-                    print(f"x = {x}")
                     if x is None:
                         print("failed to solve stabilizer QP")
                         arm_cmd_vel = np.zeros(6)
@@ -406,8 +351,8 @@ def main():
             )
 
             # accelerate toward desired velocity
-            lin_vel = change_velocity(lin_vel, lin_vel_des, LIN_ACC, dt)
-            ang_vel = change_velocity(ang_vel, ang_vel_des, ANG_ACC, dt)
+            lin_vel = sd.change_velocity(lin_vel, lin_vel_des, LIN_ACC, dt)
+            ang_vel = sd.change_velocity(ang_vel, ang_vel_des, ANG_ACC, dt)
 
             # enforce velocity limits
             lin_vel_norm = np.linalg.norm(lin_vel)
@@ -423,8 +368,6 @@ def main():
                 base_cmd_vel = np.zeros(3)
             cmd_vel = np.concatenate((base_cmd_vel, arm_cmd_vel))
 
-            # print(arm_cmd_vel)
-
             # send command to the robot
             if args.dry_run:
                 # print(f"q = {q}")
@@ -436,7 +379,6 @@ def main():
             rate.sleep()
     finally:
         if not args.dry_run:
-            print("brake")
             robot.brake()
 
 

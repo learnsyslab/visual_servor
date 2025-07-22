@@ -102,14 +102,12 @@ class PendulumStabilizer:
         # compute acceleration input
         r_tray = tray_position + self.tray_offset
         u = self._compute_input_lqr(q, r_tray, v_tray)
-        print(f"u = {u}")
         u = np.clip(u, -self.accel_max, self.accel_max)
 
         # integrate to get commanded velocity
         # this is in the world frame
         self.v_ee += dt * u
         self.v_ee = np.clip(self.v_ee, -self.vel_max, self.vel_max)
-        print(f"v_ee = {self.v_ee}")
 
         # diff IK QP
         J = self.model.jacobian(q)

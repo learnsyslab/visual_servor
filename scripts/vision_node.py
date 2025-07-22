@@ -150,7 +150,6 @@ def main():
     while not rospy.is_shutdown():
         t_prev = t
         t = rospy.Time.now().to_sec() - t0
-        print(f"dt = {t - t_prev}")
 
         if args.display and t - last_display_time >= DISPLAY_TIME_INTERVAL:
             last_display_time = t

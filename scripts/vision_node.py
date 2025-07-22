@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-from enum import Enum
 import argparse
+from enum import Enum
+from threading import Lock
 
 from ultralytics import YOLO
 import cv2
@@ -39,6 +40,7 @@ class VisionNode:
             (sd.MODEL_RGB_IMAGE_HEIGHT, sd.MODEL_RGB_IMAGE_WIDTH, 3)
         )
         self.target = sd.Person()
+        self.target_lock = Lock()
         self.people = []
 
         self.target_pub = rospy.Publisher("/serving/target", Target, queue_size=1)
@@ -54,8 +56,9 @@ class VisionNode:
         )
 
     def _pointcloud_cb(self, msg):
-        data = ros_numpy.numpify(msg)
-        self.target.update_depth(data["z"])
+        if self.target.hand_up:
+            data = ros_numpy.numpify(msg)
+            self.target.update_depth(data["z"])
 
     def _rgb_cb(self, msg):
         rgb_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
@@ -84,12 +87,15 @@ class VisionNode:
         if n_hand_up == 0:
             # deactivate the current target
             self.target.hand_up = False
+            self.target.depth_valid = False
             return
 
         if n_hand_up == 1:
             # one target, no ambiguity
             self.target = people[hand_up_ids[0]]
             return
+
+        print("multiple hands up")
 
         # multiple targets
         if self.target.hand_up:
@@ -121,12 +127,15 @@ class VisionNode:
 
     def publish_target(self):
         """Publish info about the target observed with the RGB-D camera."""
+        # TODO use a lock to ensure consistent state?
         msg = Target()
         msg.hand_up = self.target.hand_up
         msg.x = self.target.center[0]
         msg.y = self.target.center[1]
         msg.depth_valid = self.target.depth_valid
         msg.depth = self.target.depth
+        if self.target.depth_valid and self.target.depth < 1:
+            print(f"depth valid but depth = {self.target.depth}, hand_up = {self.target.hand_up}")
         self.target_pub.publish(msg)
 
 

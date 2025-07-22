@@ -11,7 +11,9 @@ MINIMUM_DEPTH = 0.25
 
 
 class Person:
-    def __init__(self, hand_up=False, center=None, mask=None, depth=0, depth_valid=False):
+    def __init__(
+        self, hand_up=False, center=None, mask=None, depth=0, depth_valid=False
+    ):
         self.hand_up = hand_up
 
         if center is None:
@@ -49,9 +51,10 @@ class Person:
         depth = depth[self.mask]
         depth = depth[depth >= MINIMUM_DEPTH]
         if depth.size > 0:
-            self.depth_valid = True
             self.depth = np.median(depth)
-            print(f"depth = {self.depth}")
+            self.depth_valid = True
+            if self.depth < 1:
+                print(f"depth = {self.depth}")
 
     def active(self):
         return self.hand_up and self.depth_valid

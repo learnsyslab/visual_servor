@@ -36,9 +36,6 @@ NUM_COLLISION_POINTS = 20
 BASE_VEL_MAX = np.array([0.3, 0.3, 0.2])
 BASE_ACC_MAX = np.array([0.15, 0.15, 0.25])
 
-# weight for exponential filtering of the image detections
-# FILTER_WEIGHT = 0.25
-
 # for home pose
 CONVERGENCE_TOL = 1e-2
 
@@ -327,7 +324,7 @@ def main():
                         arm_cmd_vel = x[3:]
             elif mode == SystemMode.MOVING_HOME:
                 base_error = home[:3] - q[:3]
-                base_error[2] = mm.wrap_to_pi(base_error[2])
+                # base_error[2] = mm.wrap_to_pi(base_error[2])
                 vd = Kp * base_error
 
                 # rotate into the body frame

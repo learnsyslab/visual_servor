@@ -60,6 +60,8 @@ class PendulumStabilizer:
         self.model.forward(q0)
         self.r_ee_d, _ = self.model.link_pose()
 
+        # TODO is this correct? supposed to be offset of actual tray center
+        # compared to vicon tray center
         self.tray_offset = np.append(-r_tray_ee[:2], 0)
         self.length = np.abs(r_tray_ee[2])
 

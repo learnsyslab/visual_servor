@@ -59,7 +59,6 @@ def main():
             t_prev = t
             now = rospy.Time.now().to_sec()
             t = now - t0
-            print(f"dt = {t - t_prev}")
 
             cmd_vel = stabilizer.update(robot.q, tray.position, dt)
 

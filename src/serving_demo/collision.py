@@ -86,5 +86,5 @@ class CollisionEllipse:
         x = solve_qp(P=P, q=-base_vel_des, G=G, h=h, solver=solver)
         if x is None:
             print("failed to solve obstacle avoidance QP")
-            return np.zeros(2), 0
-        return x[:2], x[2]
+            return np.zeros_like(base_vel_des)
+        return x

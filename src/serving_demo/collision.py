@@ -10,38 +10,80 @@ class CollisionEllipse:
         self.ell_shape = np.diag([1.0 / rx**2, 1.0 / ry**2])
         self.ell_center = center
 
-    def _bucket_points(points, n=20):
-        pass
-
     def squared_dist(points):
         x = points - self.ell_center
         y = x @ self.ell_shape
         return np.sum(x * y, axis=1)
 
+    def process_scan(scan, lidar_offset=None, num_buckets=20):
+        if lidar_offset is None:
+            lidar_offset = np.zeros(2)
+
+        n = len(scan.ranges)
+        num_per_bucket = n // num_buckets
+
+        ranges = np.array(scan.ranges)
+        angles = np.array([scan.angle_min + i * scan.angle_increment for i in range(n)])
+        points = (np.vstack((np.cos(angles), np.sin(angles))) * ranges).T
+
+        # wrt the center of the ellipse
+        points = points + lidar_offset
+
+        # compute squared Mahalanobis distances
+        dists = self.squared_dist(points)
+
+        # remove invalid points
+        valid = (ranges >= scan.range_min) & (ranges <= scan.range_max)
+        dists[~valid] = np.inf
+
+        bucketed_points = []
+        for i in range(start=0, stop=n, step=num_per_bucket):
+            s = i * num_per_bucket
+            e = min((i + 1) * num_per_bucket, n)
+            min_idx = np.argmin(dists[s:e]) + s
+            min_dist = dists[min_idx]
+
+            # only use the point if it is within the ellipse; otherwise there
+            # are no relevant points in this bucket
+            if min_dist <= 1:
+                bucketed_points.append(points[min_idx, :])
+
+        return np.array(bucketed_points)
+
     def filter_safe_velocity(self, lin_vel, ang_vel, points, solver="quadprog"):
-        if len(points) == 0:
-            return lin_vel, ang_vel
+        """Compute a velocity as close as possible to this one that avoids
+        collisions.
 
-        # remove points outside of the influence ellipse
-        x = points - self.ell_center
-        y = x @ self.ell_shape
-        valid = np.sum(x * y, axis=1) <= 1
-
-        y = y[valid, :]
-        points = points[valid, :]
+        Parameters
+        ----------
+        points : np.ndarray, shape (n, 2)
+            The points with which to avoid collisions. It is assumed that these
+            have already been processed to remove points outside the ellipsoid.
+        """
+        # if len(points) == 0:
+        #     return lin_vel, ang_vel
+        #
+        # # remove points outside of the influence ellipse
+        # x = points - self.ell_center
+        # y = x @ self.ell_shape
+        # valid = np.sum(x * y, axis=1) <= 1
+        #
+        # y = y[valid, :]
+        # points = points[valid, :]
 
         n = len(points)
         if n == 0:
-            # none of the points are inside the ellipse
             return lin_vel, ang_vel
 
+        # compute the normal direction to each point (i.e., the direction of
+        # the shortest distance to the ellipse boundary)
+        y = (points - self.ell_center) @ self.ell_shape
         normals = y / np.linalg.norm(y, axis=1)[:, None]
 
         P = np.eye(3)
         ξd = np.append(lin_vel, ang_vel)
         h = np.zeros(n)
 
-        # TODO we can bucket the points to avoid so many constraints
         S = np.array([[0, -1], [1, 0]])
         zs = np.sum(normals * (S @ points.T).T, axis=1)
         G = np.hstack((normals, zs[:, None]))
@@ -50,6 +92,7 @@ class CollisionEllipse:
         if np.all(G @ ξd <= h):
             return lin_vel, ang_vel
 
+        # TODO do I need to use a dedicated class?
         x = solve_qp(P=P, q=-ξd, G=G, h=h, solver=solver)
         if x is None:
             print("failed to solve obstacle avoidance QP")

@@ -69,8 +69,8 @@ class PendulumStabilizer:
         self.model.forward(q)
         self.r_ee_d, _ = self.model.link_pose()
 
-        self.v_ee = np.zeros(3)
         self.tray_pos_prev = None
+        self.v_ee = np.zeros(3)
         self.tray_vel_filter.reset()
 
     def _estimate_tray_vel(self, tray_position, dt):

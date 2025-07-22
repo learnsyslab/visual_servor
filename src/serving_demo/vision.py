@@ -11,12 +11,16 @@ MINIMUM_DEPTH = 0.25
 
 
 class Person:
-    def __init__(self, hand_up=False, center=None, depth=0, depth_valid=False):
+    def __init__(self, hand_up=False, center=None, mask=None, depth=0, depth_valid=False):
         self.hand_up = hand_up
 
         if center is None:
             center = np.zeros(2, dtype=np.int32)
         self.center = np.asarray(center)
+
+        if mask is None:
+            mask = np.zeros(np.flip(MODEL_RGB_IMAGE_SIZE), dtype=bool)
+        self.mask = mask
 
         self.depth = depth
         self.depth_valid = depth_valid
@@ -26,11 +30,11 @@ class Person:
         hand_up = class_label == 0
 
         # flip because width = columns and height = rows
-        self.mask = np.zeros(np.flip(MODEL_RGB_IMAGE_SIZE), dtype=np.uint8)
-        cv2.drawContours(self.mask, [contours], -1, 1, cv2.FILLED)
-        self.mask = self.mask.astype(bool)
+        mask = np.zeros(np.flip(MODEL_RGB_IMAGE_SIZE), dtype=np.uint8)
+        cv2.drawContours(mask, [contours], -1, 1, cv2.FILLED)
+        mask = mask.astype(bool)
 
-        xs, ys = np.where(self.mask.T)
+        xs, ys = np.where(mask.T)
         x = np.median(xs)
 
         # we choose a lower quantile for y because we want to aim closer to the
@@ -38,11 +42,11 @@ class Person:
         y = np.quantile(ys, 0.25)
         center = np.array([x, y], dtype=np.int32)
 
-        return cls(hand_up=hand_up, center=center)
+        return cls(hand_up=hand_up, center=center, mask=mask)
 
     def update_depth(self, pc_depth):
         depth = cv2.resize(pc_depth, MODEL_RGB_IMAGE_SIZE)
-        depth = depth[self.target.mask]
+        depth = depth[self.mask]
         depth = depth[depth >= MINIMUM_DEPTH]
         if depth.size > 0:
             self.depth_valid = True

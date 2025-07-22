@@ -3,29 +3,29 @@ from enum import Enum
 import argparse
 
 from spatialmath.base import rotz
-from ultralytics import YOLO
-import cv2
 import rospy
 import rospkg
-from sensor_msgs.msg import Image, PointCloud2, LaserScan
-from cv_bridge import CvBridge
-import sensor_msgs.point_cloud2 as pc2
+from sensor_msgs.msg import LaserScan
 import numpy as np
-import ros_numpy
 from qpsolvers import solve_qp
 import yaml
 
 import mobile_manipulation_central as mm
 import serving_demo as sd
+from serving_demo.msg import Target
+
 
 import IPython
 
 
 USE_STABILIZER = True
+USE_COLLISION_AVOIDANCE = False
 
 
 # control rate (Hz)
-RATE = 100
+RATE = 125
+
+TARGET_TIME_DELTA_MAX = 3
 
 # lidar offset from base origin
 # TODO: tune this
@@ -75,7 +75,8 @@ class ControlNode:
         self.collision_ellipse = sd.CollisionEllipse(rx=0.8, ry=0.75, center=[0.25, 0])
 
         self.target = sd.Person()
-        self.lidar_points = []
+        self.target_time_recv = rospy.Time.now().to_sec()
+        self.points = []
 
         self.scan_sub = rospy.Subscriber(
             "/front/scan", LaserScan, self._scan_cb, queue_size=1
@@ -84,36 +85,60 @@ class ControlNode:
             "/serving/target", Target, self._target_cb, queue_size=1
         )
 
-    def _target_sub(self, msg):
-        self.target = sd.Person(
-            hand_up=msg.hand_up,
-            center=[msg.x, msg.y],
-            depth=msg.depth,
-            depth_valid=msg.depth_valid,
-        )
+    def _target_cb(self, msg):
+        self.target.hand_up = msg.hand_up
+        self.target.center = np.array([msg.x, msg.y], dtype=np.int32)
+        self.target.depth_valid = msg.depth_valid
+        self.target.depth = msg.depth
+
+        self.target_time_recv = rospy.Time.now().to_sec()
 
     def _scan_cb(self, scan):
         """Get ranges and angles from a scan."""
-        n = len(scan.ranges)
-        ranges = np.array(scan.ranges)
-        angles = np.array([scan.angle_min + i * scan.angle_increment for i in range(n)])
-        lidar_points = (np.vstack((np.cos(angles), np.sin(angles))) * ranges).T
+        if not USE_COLLISION_AVOIDANCE:
+            return
+        self.points = self.collision_ellipse.process_scan(
+            scan, lidar_offset=LIDAR_OFFSET, num_buckets=NUM_COLLISION_POINTS
+        )
 
-        # wrt the center of the collision ellipse
-        lidar_points = lidar_points + LIDAR_OFFSET
-
-        dists = self.collision_ellipse.squared_dist(lidar_points)
-
-        # remove invalid points
-        valid = (ranges >= scan.range_min) & (ranges <= scan.range_max)
-        lidar_points = lidar_points[valid, :]
-
-        # relative to the base reference frame
-        self.lidar_points = lidar_points + LIDAR_OFFSET
+        # n = len(scan.ranges)
+        # num_per_bucket = n // NUM_COLLISION_POINTS
+        #
+        # ranges = np.array(scan.ranges)
+        # angles = np.array([scan.angle_min + i * scan.angle_increment for i in range(n)])
+        # points = (np.vstack((np.cos(angles), np.sin(angles))) * ranges).T
+        #
+        # # wrt the center of the collision ellipse
+        # # points = points + LIDAR_OFFSET
+        #
+        # # compute squared Mahalanobis distances
+        # # dists = self.collision_ellipse.squared_dist(points)
+        #
+        # # remove invalid points
+        # # TODO should we just filter out points not in the ellipsoid right
+        # # here?
+        # valid = (ranges >= scan.range_min) & (ranges <= scan.range_max)
+        # points = points[valid, :]
+        # # dists[~valid] = np.inf
+        #
+        # # bucketed_points = []
+        # # for i in range(start=0, stop=n, step=num_per_bucket):
+        # #     s = i * num_per_bucket
+        # #     e = min((i + 1) * num_per_bucket, n)
+        # #     min_idx = np.argmin(dists[s:e]) + s
+        # #     min_dist = dists[min_idx]
+        # #     if min_dist <= 1:
+        # #         bucketed_points.append(points[min_idx, :])
+        # # self.points = bucketed_points
+        #
+        # # relative to the base reference frame
+        # self.points = points + LIDAR_OFFSET
 
     def filter_safe_velocity(self, lin_vel, ang_vel):
+        if not USE_COLLISION_AVOIDANCE:
+            return lin_vel, ang_vel
         return self.collision_ellipse.filter_safe_velocity(
-            lin_vel, ang_vel, self.lidar_points
+            lin_vel, ang_vel, self.points
         )
 
     def compute_angular_error(self):
@@ -227,7 +252,7 @@ def main():
         r_tray_ee = np.array(calib["r_tray_ee"])
 
     rospy.init_node("serving_node", disable_signals=True)
-    node = ServingNode()
+    node = ControlNode()
 
     rate = rospy.Rate(RATE)
     dt = 1.0 / RATE
@@ -278,8 +303,14 @@ def main():
         t = t0
         while not rospy.is_shutdown():
             t_prev = t
-            t = rospy.Time.now().to_sec() - t0
-            print(f"dt = {t - t_prev}")
+            now = rospy.Time.now().to_sec()
+            t = now - t0
+            # print(f"dt = {t - t_prev}")
+
+            # stop if target is too delayed
+            if now - node.target_time_recv > TARGET_TIME_DELTA_MAX:
+                print(f"target not received for {now - node.target_time_recv} sec")
+                break
 
             mode_t = t - mode_start_time
             q = robot.q
@@ -325,6 +356,7 @@ def main():
                 arm_q_err = home[3:] - q[3:]
                 if USE_STABILIZER and home_stabilizer_timer.is_active(mode_t):
                     x = stabilizer.update(q, tray.position, dt)
+                    print(f"x = {x}")
                     if x is None:
                         print("failed to solve stabilizer QP")
                         arm_cmd_vel = np.zeros(6)
@@ -391,7 +423,7 @@ def main():
                 base_cmd_vel = np.zeros(3)
             cmd_vel = np.concatenate((base_cmd_vel, arm_cmd_vel))
 
-            print(arm_cmd_vel)
+            # print(arm_cmd_vel)
 
             # send command to the robot
             if args.dry_run:
@@ -406,7 +438,6 @@ def main():
         if not args.dry_run:
             print("brake")
             robot.brake()
-        cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":

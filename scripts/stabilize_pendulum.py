@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""Stabilize spatial pendulum using LQR."""
 import argparse
 from pathlib import Path
 
@@ -53,11 +54,14 @@ def main():
 
     try:
         t0 = rospy.Time.now().to_sec()
+        t = t0
         while not rospy.is_shutdown():
-            t = rospy.Time.now().to_sec() - t0
-            q = robot.q
+            t_prev = t
+            now = rospy.Time.now().to_sec()
+            t = now - t0
+            print(f"dt = {t - t_prev}")
 
-            cmd_vel = stabilizer.update(q, tray.position, dt)
+            cmd_vel = stabilizer.update(robot.q, tray.position, dt)
 
             # send command to robot
             if args.dry_run:

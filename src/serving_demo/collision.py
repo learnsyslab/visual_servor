@@ -50,19 +50,21 @@ class CollisionEllipse:
 
         return np.array(bucketed_points)
 
-    def filter_safe_velocity(self, lin_vel, ang_vel, points, solver="quadprog"):
+    def filter_safe_velocity(self, base_vel_des, points, solver="quadprog"):
         """Compute a velocity as close as possible to this one that avoids
         collisions.
 
         Parameters
         ----------
+        base_vel_des : np.ndarray, shape (3,)
+            The desired planar velocity twist of the base.
         points : np.ndarray, shape (n, 2)
             The points with which to avoid collisions. It is assumed that these
             have already been processed to remove points outside the ellipsoid.
         """
         n = len(points)
         if n == 0:
-            return lin_vel, ang_vel
+            return base_vel_des
 
         # compute the normal direction to each point (i.e., the direction of
         # the shortest distance to the ellipse boundary)
@@ -70,7 +72,6 @@ class CollisionEllipse:
         normals = y / np.linalg.norm(y, axis=1)[:, None]
 
         P = np.eye(3)
-        ξd = np.append(lin_vel, ang_vel)
         h = np.zeros(n)
 
         S = np.array([[0, -1], [1, 0]])
@@ -78,11 +79,11 @@ class CollisionEllipse:
         G = np.hstack((normals, zs[:, None]))
 
         # no need to solve the QP if no constraints active
-        if np.all(G @ ξd <= h):
-            return lin_vel, ang_vel
+        if np.all(G @ base_vel_des <= h):
+            return base_vel_des
 
         # TODO do I need to use a dedicated class to improve speed?
-        x = solve_qp(P=P, q=-ξd, G=G, h=h, solver=solver)
+        x = solve_qp(P=P, q=-base_vel_des, G=G, h=h, solver=solver)
         if x is None:
             print("failed to solve obstacle avoidance QP")
             return np.zeros(2), 0

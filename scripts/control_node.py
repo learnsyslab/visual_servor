@@ -33,10 +33,8 @@ LIDAR_OFFSET = np.array([0.25, 0])
 NUM_COLLISION_POINTS = 20
 
 # base motion limits
-ANG_VEL_MAX = 0.2
-ANG_ACC = 0.25
-LIN_VEL_MAX = 0.3
-LIN_ACC = 0.15
+BASE_VEL_MAX = np.array([0.3, 0.3, 0.2])
+BASE_ACC_MAX = np.array([0.15, 0.15, 0.25])
 
 # weight for exponential filtering of the image detections
 # FILTER_WEIGHT = 0.25
@@ -101,12 +99,10 @@ class ControlNode:
             scan, lidar_offset=LIDAR_OFFSET, num_buckets=NUM_COLLISION_POINTS
         )
 
-    def filter_safe_velocity(self, lin_vel, ang_vel):
+    def filter_safe_velocity(self, base_vel_des):
         if not USE_COLLISION_AVOIDANCE:
-            return lin_vel, ang_vel
-        return self.collision_ellipse.filter_safe_velocity(
-            lin_vel, ang_vel, self.points
-        )
+            return base_vel_des
+        return self.collision_ellipse.filter_safe_velocity(base_vel_des, self.points)
 
     def compute_angular_error(self):
         if not self.target.hand_up:
@@ -174,6 +170,19 @@ def servo_arm_up(q, vz, dt):
     return cmd_vel
 
 
+def limit_base_vel(base_cmd_vel):
+    # enforce velocity limits
+    linear, angular = base_cmd_vel[:2], base_cmd_vel[2]
+
+    lin_norm = np.linalg.norm(linear)
+    if lin_norm > BASE_VEL_MAX[0]:
+        linear = BASE_VEL_MAX[0] * linear / lin_norm
+
+    angular = np.clip(angular, -BASE_VEL_MAX[2], BASE_VEL_MAX[2])
+
+    return np.append(linear, angular)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -232,9 +241,7 @@ def main():
     home_stabilizer_timer.activate()
 
     mode = SystemMode.HOME
-    lin_vel = np.zeros(2)
-    ang_vel = 0
-    cmd_vel = np.zeros_like(robot.q)
+    base_cmd_vel = np.zeros(3)
 
     # time at which the current mode started
     mode_start_time = 0
@@ -294,8 +301,7 @@ def main():
             prev_mode = mode
 
             # move based on mode
-            lin_vel_des = np.zeros(2)
-            ang_vel_des = 0
+            base_vel_des = np.zeros(3)
             arm_cmd_vel = np.zeros(6)
 
             if mode == SystemMode.HOME:
@@ -320,23 +326,22 @@ def main():
                     else:
                         arm_cmd_vel = x[3:]
             elif mode == SystemMode.MOVING_HOME:
-                error = home[:3] - q[:3]
-                error[2] = mm.wrap_to_pi(error[2])
-                vd = Kp * error
+                base_error = home[:3] - q[:3]
+                base_error[2] = mm.wrap_to_pi(base_error[2])
+                vd = Kp * base_error
 
                 # rotate into the body frame
                 C_bw = rotz(-q[2])
                 vd = C_bw @ vd
 
-                lin_vel_des = vd[:2]
-                ang_vel_des = 0  # keep current angle
+                # keep current angle
+                base_vel_des = np.append(vd[:2], 0)
 
             elif mode == SystemMode.FOLLOWING_TARGET:
                 # base motion
                 ang_err = node.compute_angular_error()
-                vx = LIN_VEL_MAX * (1 - np.abs(ang_err))
-                lin_vel_des = np.array([vx, 0])
-                ang_vel_des = Kω * ang_err
+                vx = BASE_VEL_MAX[0] * (1 - np.abs(ang_err))
+                base_vel_des = np.array([vx, 0, Kω * ang_err])
 
                 # arm motion
                 height_err = node.compute_height_error()
@@ -346,24 +351,18 @@ def main():
                 raise ValueError(f"Invalid mode: {mode}")
 
             # collision avoidance
-            lin_vel_des, ang_vel_des = node.filter_safe_velocity(
-                lin_vel_des, ang_vel_des
-            )
+            base_vel_des = node.filter_safe_velocity(base_vel_des)
 
             # accelerate toward desired velocity
-            lin_vel = sd.change_velocity(lin_vel, lin_vel_des, LIN_ACC, dt)
-            ang_vel = sd.change_velocity(ang_vel, ang_vel_des, ANG_ACC, dt)
+            base_cmd_vel = sd.change_velocity(
+                v=base_cmd_vel, vd=base_vel_des, max_a=BASE_ACC_MAX, dt=dt
+            )
 
             # enforce velocity limits
-            lin_vel_norm = np.linalg.norm(lin_vel)
-            if lin_vel_norm > LIN_VEL_MAX:
-                lin_vel = LIN_VEL_MAX * lin_vel / lin_vel_norm
-            ang_vel = np.clip(ang_vel, -ANG_VEL_MAX, ANG_VEL_MAX)
-
             # TODO should I enforce arm velocity limits as well?
+            base_cmd_vel = limit_base_vel(base_cmd_vel)
 
             # build the full robot joint command
-            base_cmd_vel = np.append(lin_vel, ang_vel)
             if args.arm_only:
                 base_cmd_vel = np.zeros(3)
             cmd_vel = np.concatenate((base_cmd_vel, arm_cmd_vel))

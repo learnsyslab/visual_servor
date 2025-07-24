@@ -1,6 +1,7 @@
 import numpy as np
 from qpsolvers import solve_qp
 from scipy.linalg import solve_continuous_are
+from spatialmath.base import rotz
 
 import rigeo as rg
 import mobile_manipulation_central as mm
@@ -8,27 +9,61 @@ import mobile_manipulation_central as mm
 import IPython
 
 
-def pendulum_lqr_gain(length, gravity=-9.81):
+def pendulum_lqr_gain(length, gravity=-9.81, use_integral_term=False):
+    """Compute the LQR gain matrix ``K`` for the 2D pendulum.
+
+    This yields the linear control law ``u = -K @ x``.
+
+    Parameters
+    ----------
+    length : float, non-negative
+        The length of the pendulum.
+    gravity : float
+        Gravity value.
+    use_integral_term : bool
+        Set ``True`` to add an extra term to the system which is the integral
+        of the EE position. This helps eliminate steady-state error in the
+        presence of model error.
+
+    Returns
+    -------
+    : np.ndarray
+        The gain matrix ``K``.
+    """
+    assert length >= 0
     ρ = np.array([0, 0, -1])
     g = np.array([0, 0, gravity])
 
+    n = 8
+    if use_integral_term:
+        n += 2
+
     # x-y components of each of r, ρ, rdot, ρdot
-    A = np.zeros((8, 8))
+    A = np.zeros((n, n))
     A[0:2, 4:6] = np.eye(2)
     A[2:4, 6:8] = np.eye(2)
     A[6:8, 2:4] = ((rg.skew3(np.cross(ρ, g)) + rg.skew3(ρ) @ rg.skew3(g)) / length)[
         :2, :2
     ]
+    if use_integral_term:
+        A[8:10, 0:2] = np.eye(2)
 
-    B = np.zeros((8, 2))
+    B = np.zeros((n, 2))
     B[4:6, :] = np.eye(2)
     B[6:8, :] = (rg.skew3(ρ) @ rg.skew3(ρ) / length)[:2, :2]
 
     # solve for feedback gain u = -K @ x with LQR
-    Q = np.eye(8)
+    Q = np.eye(n)
     R = 0.1 * np.eye(2)
     P = solve_continuous_are(A, B, Q, R)
     return np.linalg.solve(R, B.T @ P)
+
+
+def pendulum_lqr_state(Δr, ρ, v_ee, ρ_dot, Δr_int=None):
+    x = np.concatenate((Δr[:2], ρ[:2], v_ee[:2], ρ_dot[:2]))
+    if Δr_int is not None:
+        x = np.concatenate((x, Δr_int[:2]))
+    return x
 
 
 class PendulumStabilizer:
@@ -54,22 +89,25 @@ class PendulumStabilizer:
 
         self.tray_pos_prev = None
         self.v_ee = np.zeros(3)
+        self.r_ee = np.zeros(3)
 
-    def init(self, q0, r_tray_ee):
+    def init(self, q0, r_te_e):
         # compute offset corresponding to tray origin
         self.model.forward(q0)
         self.r_ee_d, _ = self.model.link_pose()
+        self.r_ee = self.r_ee_d.copy()
 
-        # TODO is this correct? supposed to be offset of actual tray center
-        # compared to vicon tray center
-        self.tray_offset = np.append(-r_tray_ee[:2], 0)
-        self.length = np.abs(r_tray_ee[2])
+        # offset of actual tray center compared to vicon model tray center
+        self.tray_offset = np.append(-r_te_e[:2], 0)
+        self.length = np.abs(r_te_e[2]) - 0.1  # TODO
 
         self.lqr_gain = pendulum_lqr_gain(length=self.length)
+        print(self.lqr_gain)
 
     def reset(self, q):
         self.model.forward(q)
         self.r_ee_d, _ = self.model.link_pose()
+        self.r_ee = self.r_ee_d.copy()
 
         self.tray_pos_prev = None
         self.v_ee = np.zeros(3)
@@ -83,18 +121,27 @@ class PendulumStabilizer:
         self.tray_pos_prev = tray_position
         return self.tray_vel_filter.update(v_tray_raw, dt)
 
-    def _compute_input_lqr(self, q, r_tray, v_tray):
-        self.model.forward(q)
-        r_ee, _ = self.model.link_pose()
-        Δr = r_ee - self.r_ee_d
-        ρ = (r_tray - r_ee) / self.length
+    def _compute_input_lqr(self, r_ew_w, r_tw_w, v_tray):
+        # r_ee = self.r_ee
+        Δr = r_ew_w - self.r_ee_d
+        ρ = (r_tw_w - r_ew_w) / self.length
         ρdot = (v_tray - self.v_ee) / self.length
+
+        # print(f"r_tw_w = {r_tw_w}")
+        # print(f"r_ew_w = {r_ew_w}")
+        # print(f"l = {self.length}")
+        # print(f"ρ = {ρ}")
 
         # LQR state
         x = np.concatenate((Δr[:2], ρ[:2], self.v_ee[:2], ρdot[:2]))
 
         u = np.zeros(3)
         u[:2] = -self.lqr_gain @ x
+
+        print(f"x = {x}")
+        print(f"u = {u}")
+        # raise ValueError()
+
         return u
 
     def update(self, q, tray_position, dt, solver="quadprog"):
@@ -102,8 +149,15 @@ class PendulumStabilizer:
         v_tray = self._estimate_tray_vel(tray_position, dt)
 
         # compute acceleration input
-        r_tray = tray_position + self.tray_offset
-        u = self._compute_input_lqr(q, r_tray, v_tray)
+        # print(f"tray_position = {tray_position}")
+
+        self.model.forward(q)
+        r_ew_w = self.model.link_pose()[0]
+        C_we = rotz(q[2])
+
+        r_tw_w = tray_position + C_we @ self.tray_offset
+        # self.r_ee = self.r_ee + dt * self.v_ee
+        u = self._compute_input_lqr(r_ew_w, r_tw_w, v_tray)
         u = np.clip(u, -self.accel_max, self.accel_max)
 
         # integrate to get commanded velocity
@@ -116,8 +170,6 @@ class PendulumStabilizer:
         ξ_ee = np.concatenate((self.v_ee, np.zeros(3)))
         A = np.hstack((J[:, 3:], -ξ_ee.reshape((6, 1))))
 
-        # TODO we may also want to steer back toward q0 rather than just desired r
-        # TODO use problem class?
         x = solve_qp(
             P=self.P,
             q=self.q,
@@ -155,11 +207,11 @@ class PendulumStabilizerTimer:
         # max time has elapsed
         if t > self.max_time:
             self._active = False
-        elif (
-            t > self.min_time
-            and v is not None
-            and np.linalg.norm(v) <= self.tray_vel_tol
-        ):
-            print("tray has converged")
-            self._active = False
+        # elif (
+        #     t > self.min_time
+        #     and v is not None
+        #     and np.linalg.norm(v) <= self.tray_vel_tol
+        # ):
+        #     print("tray has converged")
+        #     self._active = False
         return self._active

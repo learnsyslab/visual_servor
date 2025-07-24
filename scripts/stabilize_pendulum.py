@@ -26,12 +26,11 @@ def main():
     args = parser.parse_args()
 
     # load pendulum calibration
-    rospack = rospkg.RosPack()
-    pkg_path = Path(rospack.get_path("serving_demo"))
-    calib_path = pkg_path / "config" / "pendulum_calibration.yaml"
-    with open(calib_path) as f:
-        calib = yaml.safe_load(f)
-        r_tray_ee = np.array(calib["r_tray_ee"])
+    r_te_e = np.array(
+        mm.load_pkg_config(
+            pkg_name="serving_demo", relpath="config/pendulum_calibration.yaml"
+        )["r_te_e"]
+    )
 
     rospy.init_node("pendulum_node", disable_signals=True)
 
@@ -42,15 +41,17 @@ def main():
     tray = mm.ViconObjectInterface("ThingRoundTray")
     signal_handler = mm.RobotSignalHandler(robot, args.dry_run)
 
-    model = mm.MobileManipulatorKinematics(tool_link_name="pendulum_pivot")
-    stabilizer = sd.PendulumStabilizer(model=model)
+    model = mm.MobileManipulatorKinematics(tool_link_name="ur10_arm_tool0")
+    stabilizer = sd.PendulumStabilizer(
+        model=model, vel_max=VEL_MAX, accel_max=ACCEL_MAX, joint_vel_max=JOINT_VEL_MAX
+    )
 
     print("Waiting for robot...")
     while not rospy.is_shutdown() and not (robot.ready() and tray.ready()):
         rate.sleep()
     print("...robot ready.")
 
-    stabilizer.init(robot.q, r_tray_ee)
+    stabilizer.init(robot.q, r_te_e)
 
     try:
         t0 = rospy.Time.now().to_sec()
@@ -60,7 +61,7 @@ def main():
             now = rospy.Time.now().to_sec()
             t = now - t0
 
-            cmd_vel = stabilizer.update(robot.q, tray.position, dt)
+            cmd_vel = stabilizer.update(robot.q, robot.v, tray.position, dt)
 
             # send command to robot
             if args.dry_run:

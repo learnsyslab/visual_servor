@@ -194,11 +194,11 @@ def main():
     home = mm.load_home_position(name="default", path=sd_path + "/config/home.yaml")
 
     # load pendulum calibration
-    # TODO clean up?
-    calib_path = sd_path + "/config/pendulum_calibration.yaml"
-    with open(calib_path) as f:
-        calib = yaml.safe_load(f)
-        r_tray_ee = np.array(calib["r_tray_ee"])
+    r_te_e = np.array(
+        mm.load_pkg_config(
+            pkg_name="serving_demo", relpath="config/pendulum_calibration.yaml"
+        )["r_te_e"]
+    )
 
     rospy.init_node("serving_node", disable_signals=True)
     node = ControlNode()
@@ -213,7 +213,7 @@ def main():
     tray = mm.ViconObjectInterface("ThingRoundTray")
     signal_handler = mm.RobotSignalHandler(robot, args.dry_run)
 
-    model = mm.MobileManipulatorKinematics(tool_link_name="pendulum_pivot")
+    model = mm.MobileManipulatorKinematics(tool_link_name="ur10_arm_tool0")
     stabilizer = sd.PendulumStabilizer(model=model)
     home_stabilizer_timer = sd.PendulumStabilizerTimer(
         stabilizer=stabilizer,
@@ -234,7 +234,7 @@ def main():
         rate.sleep()
     print("...robot ready.")
 
-    stabilizer.init(q0=robot.q, r_tray_ee=r_tray_ee)
+    stabilizer.init(q0=robot.q, r_te_e=r_te_e)
     home_stabilizer_timer.activate()
 
     mode = SystemMode.HOME

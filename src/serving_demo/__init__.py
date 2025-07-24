@@ -1,6 +1,11 @@
 from .collision import CollisionEllipse
 from .motion import change_velocity, decelerate
-from .stabilizer import PendulumStabilizer, PendulumStabilizerTimer, pendulum_lqr_gain
+from .stabilizer import (
+    PendulumStabilizer,
+    PendulumStabilizerTimer,
+    pendulum_lqr_gain,
+    pendulum_lqr_state,
+)
 from .utils import unit, orth
 from .vision import (
     Person,

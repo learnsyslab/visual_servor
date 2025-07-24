@@ -3,6 +3,8 @@ import numpy as np
 import rospy
 import yaml
 
+from spatialmath.base import rotz
+
 import mobile_manipulation_central as mm
 
 
@@ -15,7 +17,7 @@ def main():
 
     robot = mm.MobileManipulatorROSInterface()
     tray = mm.ViconObjectInterface("ThingRoundTray")
-    model = mm.MobileManipulatorKinematics(tool_link_name="pendulum_pivot")
+    model = mm.MobileManipulatorKinematics(tool_link_name="ur10_arm_tool0")
 
     rate = rospy.Rate(RATE)
 
@@ -25,23 +27,25 @@ def main():
     print("...robot ready.")
 
     # gather measurements
-    r_tray_ees = []
+    r_te_es = []
     while not rospy.is_shutdown():
         model.forward(robot.q)
-        r_ee = model.link_pose()[0]
-        r_tray = tray.position
-        r_tray_ees.append(r_tray - r_ee)
-        if len(r_tray_ees) >= NUM_MEASUREMENTS:
+        r_ew_w = model.link_pose()[0]
+        C_we = rotz(robot.q[2])
+        r_tw_w = tray.position
+        r_te_e = C_we.T @ (r_tw_w - r_ew_w)
+        r_te_es.append(r_te_e)
+        if len(r_te_es) >= NUM_MEASUREMENTS:
             break
         rate.sleep()
 
     # average measurements
-    r_tray_ee = np.mean(r_tray_ees, axis=0).tolist()
-    print(f"r_tray_ee = {r_tray_ee}")
+    r_te_e = np.mean(r_te_es, axis=0).tolist()
+    print(f"r_te_e = {r_te_e}")
 
     filename = "pendulum_calibration.yaml"
     with open(filename, "w") as f:
-        yaml.dump({"r_tray_ee": r_tray_ee}, f)
+        yaml.dump({"r_te_e": r_te_e}, f)
     print(f"Wrote calibration to {filename}.")
 
 

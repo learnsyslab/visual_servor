@@ -30,13 +30,15 @@ TARGET_TIME_DELTA_MAX = 3
 # lidar offset from base origin
 # TODO: tune this
 LIDAR_OFFSET = np.array([0.25, 0])
+
+# number of points of nearby obstacles to use for collision avoidance
 NUM_COLLISION_POINTS = 20
 
 # base motion limits
 BASE_VEL_MAX = np.array([0.3, 0.3, 0.2])
 BASE_ACC_MAX = np.array([0.15, 0.15, 0.25])
 
-# for home pose
+# for home pose and base velocity
 CONVERGENCE_TOL = 1e-2
 
 # if tray velocity is below this, then we consider it stabilized
@@ -62,7 +64,8 @@ class SystemMode(Enum):
     HOME = 0
     MOVING_HOME = 1
     FOLLOWING_TARGET = 2
-    SERVING = 3
+    SERVING_DECEL = 3
+    SERVING = 4
 
 
 class ControlNode:
@@ -214,7 +217,7 @@ def main():
     signal_handler = mm.RobotSignalHandler(robot, args.dry_run)
 
     model = mm.MobileManipulatorKinematics(tool_link_name="ur10_arm_tool0")
-    stabilizer = sd.PendulumStabilizer(model=model)
+    stabilizer = sd.PendulumStabilizer(model=model, use_integral_term=True)
     home_stabilizer_timer = sd.PendulumStabilizerTimer(
         stabilizer=stabilizer,
         min_time=MIN_STABILIZE_TIME,
@@ -234,7 +237,8 @@ def main():
         rate.sleep()
     print("...robot ready.")
 
-    stabilizer.init(q0=robot.q, r_te_e=r_te_e)
+    qd = robot.q.copy()
+    stabilizer.init(q0=qd, r_te_e=r_te_e)
     home_stabilizer_timer.activate()
 
     mode = SystemMode.HOME
@@ -273,9 +277,12 @@ def main():
                 and node.target.depth <= 1.5
             ):
                 print(f"target depth = {node.target.depth}")
-                stabilizer.reset(q)
-                serving_stabilizer_timer.activate()
-                mode = SystemMode.SERVING
+                mode = SystemMode.SERVING_DECEL
+            elif mode == SystemMode.SERVING_DECEL:
+                if mode_t >= 1 and np.linalg.norm(base_cmd_vel) <= CONVERGENCE_TOL:
+                    stabilizer.reset(q)
+                    serving_stabilizer_timer.activate()
+                    mode = SystemMode.SERVING
             elif node.target.hand_up:
                 mode = SystemMode.FOLLOWING_TARGET
             elif (
@@ -314,6 +321,9 @@ def main():
                 # elif np.linalg.norm(arm_q_err) > CONVERGENCE_TOL:
                 #     # move arm back to home after stabilizing
                 #     arm_cmd_vel = Kp * arm_q_err
+            elif mode == SystemMode.SERVING_DECEL:
+                # no logic: just decelerate
+                pass
             elif mode == SystemMode.SERVING:
                 if USE_STABILIZER and serving_stabilizer_timer.is_active(mode_t):
                     x = stabilizer.update(q, tray.position, dt)

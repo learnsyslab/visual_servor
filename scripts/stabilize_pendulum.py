@@ -15,6 +15,7 @@ RATE = 125
 ACCEL_MAX = 0.5
 VEL_MAX = 0.1
 JOINT_VEL_MAX = 0.1
+USE_INTEGRAL_TERM = True
 
 
 def main():
@@ -43,7 +44,11 @@ def main():
 
     model = mm.MobileManipulatorKinematics(tool_link_name="ur10_arm_tool0")
     stabilizer = sd.PendulumStabilizer(
-        model=model, vel_max=VEL_MAX, accel_max=ACCEL_MAX, joint_vel_max=JOINT_VEL_MAX
+        model=model,
+        vel_max=VEL_MAX,
+        accel_max=ACCEL_MAX,
+        joint_vel_max=JOINT_VEL_MAX,
+        use_integral_term=USE_INTEGRAL_TERM,
     )
 
     print("Waiting for robot...")
@@ -61,7 +66,7 @@ def main():
             now = rospy.Time.now().to_sec()
             t = now - t0
 
-            cmd_vel = stabilizer.update(robot.q, robot.v, tray.position, dt)
+            cmd_vel = stabilizer.update(robot.q, tray.position, dt)
 
             # send command to robot
             if args.dry_run:

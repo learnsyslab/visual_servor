@@ -60,6 +60,7 @@ def pendulum_lqr_gain(length, gravity=-9.81, use_integral_term=False):
 
 
 def pendulum_lqr_state(Δr, ρ, v_ee, ρ_dot, Δr_int=None):
+    """Construct the LQR state vector ``x``."""
     x = np.concatenate((Δr[:2], ρ[:2], v_ee[:2], ρ_dot[:2]))
     if Δr_int is not None:
         x = np.concatenate((x, Δr_int[:2]))
@@ -74,13 +75,16 @@ class PendulumStabilizer:
         accel_max=0.5,
         vel_max=0.1,
         joint_vel_max=0.1,
+        use_integral_term=False,
     ):
         self.model = model
         self.tray_vel_filter = mm.ExponentialSmoother(τ=tray_vel_filter_tau)
+        self.use_integral_term = use_integral_term
 
         self.accel_max = accel_max
         self.vel_max = vel_max
 
+        # QP data matrices
         self.P = np.diag(np.append(np.ones(6), 0.01))
         self.q = np.append(np.zeros(6), -1)
         self.ub = np.append(joint_vel_max * np.ones(6), 1)
@@ -89,25 +93,25 @@ class PendulumStabilizer:
 
         self.tray_pos_prev = None
         self.v_ee = np.zeros(3)
-        self.r_ee = np.zeros(3)
+        self.Δr_int = np.zeros(3) if self.use_integral_term else None
 
     def init(self, q0, r_te_e):
         # compute offset corresponding to tray origin
         self.model.forward(q0)
-        self.r_ee_d, _ = self.model.link_pose()
-        self.r_ee = self.r_ee_d.copy()
+        self.r_ee_d = self.model.link_pose()[0]
 
         # offset of actual tray center compared to vicon model tray center
         self.tray_offset = np.append(-r_te_e[:2], 0)
         self.length = np.abs(r_te_e[2]) - 0.1  # TODO
 
-        self.lqr_gain = pendulum_lqr_gain(length=self.length)
-        print(self.lqr_gain)
+        self.lqr_gain = pendulum_lqr_gain(
+            length=self.length, use_integral_term=self.use_integral_term
+        )
 
     def reset(self, q):
         self.model.forward(q)
-        self.r_ee_d, _ = self.model.link_pose()
-        self.r_ee = self.r_ee_d.copy()
+        self.r_ee_d = self.model.link_pose()[0]
+        self.Δr_int = np.zeros(3) if self.use_integral_term else None
 
         self.tray_pos_prev = None
         self.v_ee = np.zeros(3)
@@ -121,19 +125,17 @@ class PendulumStabilizer:
         self.tray_pos_prev = tray_position
         return self.tray_vel_filter.update(v_tray_raw, dt)
 
-    def _compute_input_lqr(self, r_ew_w, r_tw_w, v_tray):
-        # r_ee = self.r_ee
+    def _compute_input_lqr(self, r_ew_w, r_tw_w, v_tray, dt):
         Δr = r_ew_w - self.r_ee_d
+        if self.use_integral_term:
+            self.Δr_int = self.Δr_int + dt * Δr
+            self.Δr_int = np.clip(self.Δr_int, -0.25, 0.25)
         ρ = (r_tw_w - r_ew_w) / self.length
-        ρdot = (v_tray - self.v_ee) / self.length
+        ρ_dot = (v_tray - self.v_ee) / self.length
 
-        # print(f"r_tw_w = {r_tw_w}")
-        # print(f"r_ew_w = {r_ew_w}")
-        # print(f"l = {self.length}")
-        # print(f"ρ = {ρ}")
-
-        # LQR state
-        x = np.concatenate((Δr[:2], ρ[:2], self.v_ee[:2], ρdot[:2]))
+        x = pendulum_lqr_state(
+            Δr=Δr, ρ=ρ, v_ee=self.v_ee, ρ_dot=ρ_dot, Δr_int=self.Δr_int
+        )
 
         u = np.zeros(3)
         u[:2] = -self.lqr_gain @ x
@@ -148,20 +150,16 @@ class PendulumStabilizer:
         # estimate tray velocity
         v_tray = self._estimate_tray_vel(tray_position, dt)
 
-        # compute acceleration input
-        # print(f"tray_position = {tray_position}")
-
         self.model.forward(q)
         r_ew_w = self.model.link_pose()[0]
         C_we = rotz(q[2])
-
         r_tw_w = tray_position + C_we @ self.tray_offset
-        # self.r_ee = self.r_ee + dt * self.v_ee
-        u = self._compute_input_lqr(r_ew_w, r_tw_w, v_tray)
+
+        # compute acceleration input
+        u = self._compute_input_lqr(r_ew_w, r_tw_w, v_tray, dt)
         u = np.clip(u, -self.accel_max, self.accel_max)
 
-        # integrate to get commanded velocity
-        # this is in the world frame
+        # integrate to get commanded velocity (in the world frame)
         self.v_ee += dt * u
         self.v_ee = np.clip(self.v_ee, -self.vel_max, self.vel_max)
 

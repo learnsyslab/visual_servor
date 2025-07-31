@@ -1,6 +1,47 @@
 import numpy as np
 
 
+class TrapezoidalTrajectory:
+    def __init__(self, a, t1, t2=None):
+        if t2 is None:
+            t2 = t1
+        assert t2 >= t1
+        self.t1 = t1
+        self.t2 = t2
+        self.duration = t1 + t2
+
+        # acceleration
+        self.a = a
+
+        # peak/constant velocity
+        self.v = self.t1 * self.a
+
+        # distances
+        self.q1 = 0.5 * self.a * self.t1**2
+        self.q2 = self.q1 + (t2 - t1) * self.v
+        self.qf = self.q2 + self.q1
+
+    def sample(self, t):
+        if t <= self.t1:
+            # acceleration
+            vd = self.a * t
+            qd = 0.5 * self.a * t**2
+        elif t <= self.t2:
+            # constant velocity
+            vd = self.v
+            qd = self.q1 + (t - self.t1) * self.v
+        elif t <= self.duration:
+            # deceleration
+            s = t - self.t2
+            vd = self.v - s * self.a
+            qd = self.q2 + self.v * s - 0.5 * self.a * s**2
+        else:
+            # end position
+            vd = 0
+            qd = self.qf
+        return qd, vd
+
+
 def change_velocity(v, vd, max_a, dt):
     """Accelerate to a desired velocity, with limits.
 

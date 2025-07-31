@@ -13,5 +13,6 @@ catkin_python_setup()
 add_message_files(
   FILES
   Target.msg
+  SystemState.msg
 )
-generate_messages()
+generate_messages(DEPENDENCIES std_msgs)

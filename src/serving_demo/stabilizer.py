@@ -6,8 +6,6 @@ from spatialmath.base import rotz
 import rigeo as rg
 import mobile_manipulation_central as mm
 
-import IPython
-
 
 def pendulum_lqr_gain(length, gravity=-9.81, use_integral_term=False):
     """Compute the LQR gain matrix ``K`` for the 2D pendulum.

@@ -1,5 +1,5 @@
 from .collision import CollisionEllipse
-from .motion import change_velocity, decelerate
+from .motion import TrapezoidalTrajectory, change_velocity, decelerate
 from .stabilizer import (
     PendulumStabilizer,
     PendulumStabilizerTimer,

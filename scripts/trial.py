@@ -16,8 +16,8 @@ CONVERGENCE_TOL = 1e-2
 # durations of each segment
 TRAJECTORY_DURATION = 4
 STATIONARY_DURATION_1 = 1
-STABILIZE_DURATION = 5
-STATIONARY_DURATION_2 = 5
+STABILIZE_DURATION = 10
+STATIONARY_DURATION_2 = 3
 
 
 def main():
@@ -129,6 +129,7 @@ def main():
 
             rate.sleep()
 
+        robot.brake()
         print("base converged")
         t1 = t
 
@@ -153,17 +154,9 @@ def main():
                     if not stabilizing:
                         stabilizer.reset(robot.q)
                         stabilizing = True
+                        print("stabilizing")
                     else:
-                        arm_cmd_vel = stabilizer.update(robot.q, tray.position, dt)[3:]
-                elif (
-                    t
-                    <= t1
-                    + STATIONARY_DURATION_1
-                    + STABILIZE_DURATION
-                    + STATIONARY_DURATION_2
-                ):
-                    # wait a bit more to record what happens
-                    pass
+                        arm_cmd_vel = stabilizer.update(robot.q, tray.position, dt)
                 else:
                     break
             else:
@@ -174,8 +167,6 @@ def main():
             # send command to the robot
             if not args.dry_run:
                 robot.publish_cmd_vel(cmd_vel, bodyframe=False)
-            # else:
-            #     print(cmd_vel)
 
             msg = SystemState()
             msg.header.stamp = now

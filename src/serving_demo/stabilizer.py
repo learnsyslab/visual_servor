@@ -144,23 +144,7 @@ class PendulumStabilizer:
 
         return u
 
-    def update(self, q, tray_position, dt, solver="quadprog"):
-        # estimate tray velocity
-        v_tray = self._estimate_tray_vel(tray_position, dt)
-
-        self.model.forward(q)
-        r_ew_w = self.model.link_pose()[0]
-        C_we = rotz(q[2])
-        r_tw_w = tray_position + C_we @ self.tray_offset
-
-        # compute acceleration input
-        u = self._compute_input_lqr(r_ew_w, r_tw_w, v_tray, dt)
-        u = np.clip(u, -self.accel_max, self.accel_max)
-
-        # integrate to get commanded velocity (in the world frame)
-        self.v_ee += dt * u
-        self.v_ee = np.clip(self.v_ee, -self.vel_max, self.vel_max)
-
+    def _compute_arm_cmd_vel(q, solver):
         # diff IK QP
         J = self.model.jacobian(q)
         ξ_ee = np.concatenate((self.v_ee, np.zeros(3)))
@@ -179,7 +163,49 @@ class PendulumStabilizer:
         if x is None:
             return None
         arm_cmd_vel = x[:6]
-        return np.concatenate((np.zeros(3), arm_cmd_vel))
+        return arm_cmd_vel
+
+    def update(self, q, tray_position, dt, base=False, solver="quadprog"):
+        """Compute the next velocity command to stabilize the pendulum.
+
+        Parameters
+        ----------
+        q : np.ndarray, shape (9,)
+            The current joint configuration.
+        tray_position : np.ndarray, shape (3,)
+            The position of the tray in the world frame.
+        dt : float
+            The timestep since the last update.
+        base : bool
+            Set ``True`` to generate a command for the mobile base, or
+            ``False`` to generate a command for the arm.
+        solver : str
+            The solver to use for solving the QP when generating arm commands.
+
+        Returns
+        -------
+        : np.ndarray
+            The commanded velocity of either the arm or the base.
+        """
+        # estimate tray velocity
+        v_tray = self._estimate_tray_vel(tray_position, dt)
+
+        self.model.forward(q)
+        r_ew_w = self.model.link_pose()[0]
+        C_we = rotz(q[2])
+        r_tw_w = tray_position + C_we @ self.tray_offset
+
+        # compute acceleration input
+        u = self._compute_input_lqr(r_ew_w, r_tw_w, v_tray, dt)
+        u = np.clip(u, -self.accel_max, self.accel_max)
+
+        # integrate to get commanded velocity (in the world frame)
+        self.v_ee += dt * u
+        self.v_ee = np.clip(self.v_ee, -self.vel_max, self.vel_max)
+
+        if base:
+            return np.append(self.v_ee[:2], 0)
+        return self._compute_arm_cmd_vel(q, solver=solver)
 
 
 class PendulumStabilizerTimer:

@@ -24,6 +24,9 @@ def main():
     parser.add_argument(
         "--dry-run", action="store_true", help="Don't send commands to the robot."
     )
+    parser.add_argument(
+        "--base", action="store_true", help="Move the mobile base rather than the arm."
+    )
     args = parser.parse_args()
 
     # load pendulum calibration
@@ -60,13 +63,15 @@ def main():
 
     try:
         t0 = rospy.Time.now().to_sec()
-        t = t0
+        t = 0
         while not rospy.is_shutdown():
-            t_prev = t
-            now = rospy.Time.now().to_sec()
-            t = now - t0
+            t = rospy.Time.now().to_sec() - t0
 
-            cmd_vel = stabilizer.update(robot.q, tray.position, dt)
+            cmd_vel = stabilizer.update(robot.q, tray.position, dt, base=args.base)
+            if args.base:
+                cmd_vel = np.concatenate((cmd_vel, np.zeros(6)))
+            else:
+                cmd_vel = np.concatenate((np.zeros(3), cmd_vel))
 
             # send command to robot
             if args.dry_run:

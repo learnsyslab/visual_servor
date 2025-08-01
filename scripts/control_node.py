@@ -311,12 +311,10 @@ def main():
             if mode == SystemMode.HOME:
                 arm_q_err = home[3:] - q[3:]
                 if USE_STABILIZER and home_stabilizer_timer.is_active(mode_t):
-                    x = stabilizer.update(q, tray.position, dt)
-                    if x is None:
+                    arm_cmd_vel = stabilizer.update(q, tray.position, dt)
+                    if arm_cmd_vel is None:
                         print("failed to solve stabilizer QP")
                         arm_cmd_vel = np.zeros(6)
-                    else:
-                        arm_cmd_vel = x[3:]
                 # TODO
                 # elif np.linalg.norm(arm_q_err) > CONVERGENCE_TOL:
                 #     # move arm back to home after stabilizing

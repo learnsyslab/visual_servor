@@ -34,7 +34,7 @@ def main():
     np.set_printoptions(precision=6, suppress=True)
 
     rospack = rospkg.RosPack()
-    home_config_file = Path(rospack.get_path("serving_demo")) / "config/home.yaml"
+    home_config_file = Path(rospack.get_path("visual_servor")) / "config/home.yaml"
     home = mm.load_home_position(name="sim", path=home_config_file)
 
     sim = mm.BulletSimulation(TIMESTEP)
@@ -42,7 +42,7 @@ def main():
     xacro_doc = XacroDoc.from_includes(
         [
             "$(find mobile_manipulation_central)/urdf/xacro/thing_pyb.urdf.xacro",
-            "$(find serving_demo)/urdf/tray_pendulum.urdf.xacro",
+            "$(find visual_servor)/urdf/tray_pendulum.urdf.xacro",
         ]
     )
     with xacro_doc.temp_urdf_file_path() as urdf_path:

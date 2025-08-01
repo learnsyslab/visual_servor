@@ -1,11 +1,11 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-import serving_demo as sd
+import visual_servor as vs
 
 
 def main():
-    traj = sd.TrapezoidalTrajectory(a=0.5, t1=2, t2=2)
+    traj = vs.TrapezoidalTrajectory(a=0.5, t1=2, t2=2)
 
     ts = np.linspace(0, traj.duration, 1000)
     vs = np.zeros_like(ts)

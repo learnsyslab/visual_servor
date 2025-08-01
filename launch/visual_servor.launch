@@ -3,5 +3,5 @@
 <!-- Launch camera and robot. -->
 <launch>
   <include file="$(find mobile_manipulation_central)/launch/thing.launch" pass_all_args="true"/>
-  <include file="$(find serving_demo)/launch/orbbec.launch" pass_all_args="true"/>
+  <include file="$(find visual_servor)/launch/orbbec.launch" pass_all_args="true"/>
 </launch>

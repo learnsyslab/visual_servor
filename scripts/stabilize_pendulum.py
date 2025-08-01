@@ -9,7 +9,7 @@ import rospkg
 import yaml
 
 import mobile_manipulation_central as mm
-import serving_demo as sd
+import visual_servor as vs
 
 RATE = 125
 ACCEL_MAX = 0.5
@@ -32,7 +32,7 @@ def main():
     # load pendulum calibration
     r_te_e = np.array(
         mm.load_pkg_config(
-            pkg_name="serving_demo", relpath="config/pendulum_calibration.yaml"
+            pkg_name="visual_servor", relpath="config/pendulum_calibration.yaml"
         )["r_te_e"]
     )
 
@@ -46,7 +46,7 @@ def main():
     signal_handler = mm.RobotSignalHandler(robot, args.dry_run)
 
     model = mm.MobileManipulatorKinematics(tool_link_name="ur10_arm_tool0")
-    stabilizer = sd.PendulumStabilizer(
+    stabilizer = vs.PendulumStabilizer(
         model=model,
         vel_max=VEL_MAX,
         accel_max=ACCEL_MAX,
@@ -63,7 +63,6 @@ def main():
 
     try:
         t0 = rospy.Time.now().to_sec()
-        t = 0
         while not rospy.is_shutdown():
             t = rospy.Time.now().to_sec() - t0
 
@@ -77,7 +76,7 @@ def main():
             if args.dry_run:
                 print(f"cmd_vel = {cmd_vel}")
             else:
-                robot.publish_cmd_vel(cmd_vel, bodyframe=True)
+                robot.publish_cmd_vel(cmd_vel, bodyframe=False)
 
             rate.sleep()
     finally:

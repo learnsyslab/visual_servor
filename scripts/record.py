@@ -47,7 +47,7 @@ def main():
     # load configuration and write it out as a single yaml file
     config_out_path = log_dir / "config.yaml"
     config = mm.load_pkg_config(
-        pkg_name="serving_demo", relpath="config/pendulum_calibration.yaml"
+        pkg_name="visual_servor", relpath="config/pendulum_calibration.yaml"
     )
     with open(config_out_path, "w") as f:
         yaml.dump(config, stream=f, default_flow_style=False)

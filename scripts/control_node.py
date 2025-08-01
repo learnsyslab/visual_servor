@@ -11,8 +11,8 @@ from qpsolvers import solve_qp
 import yaml
 
 import mobile_manipulation_central as mm
-import serving_demo as sd
-from serving_demo.msg import Target
+import visual_servor as vs
+from visual_servor.msg import Target
 
 
 import IPython
@@ -70,9 +70,9 @@ class SystemMode(Enum):
 
 class ControlNode:
     def __init__(self):
-        self.collision_ellipse = sd.CollisionEllipse(rx=0.8, ry=0.75, center=[0.25, 0])
+        self.collision_ellipse = vs.CollisionEllipse(rx=0.8, ry=0.75, center=[0.25, 0])
 
-        self.target = sd.Person()
+        self.target = vs.Person()
         self.target_time_recv = rospy.Time.now().to_sec()
         self.points = []
 
@@ -109,7 +109,7 @@ class ControlNode:
             return 0
 
         x = self.target.center[0]
-        w2 = sd.MODEL_RGB_IMAGE_WIDTH / 2
+        w2 = vs.MODEL_RGB_IMAGE_WIDTH / 2
         error = w2 - x
 
         # normalize to [-1, 1]
@@ -121,7 +121,7 @@ class ControlNode:
             return 0
 
         y = self.target.center[1]
-        h2 = sd.MODEL_RGB_IMAGE_HEIGHT / 2
+        h2 = vs.MODEL_RGB_IMAGE_HEIGHT / 2
         error = h2 - y
 
         # normalize to [-1, 1]
@@ -193,13 +193,13 @@ def main():
 
     # load home position
     rospack = rospkg.RosPack()
-    sd_path = rospack.get_path("serving_demo")
-    home = mm.load_home_position(name="default", path=sd_path + "/config/home.yaml")
+    pkg_path = rospack.get_path("visual_servor")
+    home = mm.load_home_position(name="default", path=pkg_path + "/config/home.yaml")
 
     # load pendulum calibration
     r_te_e = np.array(
         mm.load_pkg_config(
-            pkg_name="serving_demo", relpath="config/pendulum_calibration.yaml"
+            pkg_name="visual_servor", relpath="config/pendulum_calibration.yaml"
         )["r_te_e"]
     )
 
@@ -217,14 +217,14 @@ def main():
     signal_handler = mm.RobotSignalHandler(robot, args.dry_run)
 
     model = mm.MobileManipulatorKinematics(tool_link_name="ur10_arm_tool0")
-    stabilizer = sd.PendulumStabilizer(model=model, use_integral_term=True)
-    home_stabilizer_timer = sd.PendulumStabilizerTimer(
+    stabilizer = vs.PendulumStabilizer(model=model, use_integral_term=True)
+    home_stabilizer_timer = vs.PendulumStabilizerTimer(
         stabilizer=stabilizer,
         min_time=MIN_STABILIZE_TIME,
         max_time=MAX_STABILIZE_TIME_HOME,
         tray_vel_tol=TRAY_VEL_TOL,
     )
-    serving_stabilizer_timer = sd.PendulumStabilizerTimer(
+    serving_stabilizer_timer = vs.PendulumStabilizerTimer(
         stabilizer=stabilizer,
         min_time=MIN_STABILIZE_TIME,
         max_time=MAX_STABILIZE_TIME_SERVING,
@@ -359,7 +359,7 @@ def main():
             base_vel_des = node.filter_safe_velocity(base_vel_des)
 
             # accelerate toward desired velocity
-            base_cmd_vel = sd.change_velocity(
+            base_cmd_vel = vs.change_velocity(
                 v=base_cmd_vel, vd=base_vel_des, max_a=BASE_ACC_MAX, dt=dt
             )
 

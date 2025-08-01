@@ -5,7 +5,7 @@ from scipy.linalg import expm
 from scipy.spatial.transform import Rotation
 import matplotlib.pyplot as plt
 
-import serving_demo as sd
+import visual_servor as vs
 
 import IPython
 
@@ -130,7 +130,7 @@ def simulate(
     if not static:
         # tensile forces must be positive
         fts = cp.Variable(4, nonneg=True)
-        ft = cp.sum([-f * sd.unit(a) for f, a in zip(fts, anchors)])
+        ft = cp.sum([-f * vs.unit(a) for f, a in zip(fts, anchors)])
 
         # no torque because forces all act through the origin
         constraints.append(wt == cp.hstack((np.zeros(3), ft)))
@@ -138,7 +138,7 @@ def simulate(
     problem = cp.Problem(objective, constraints)
 
     # LQR
-    lqr_gain = sd.pendulum_lqr_gain(length=pendulum_length)
+    lqr_gain = vs.pendulum_lqr_gain(length=pendulum_length)
     stabilizing = False
 
     ts = []
@@ -160,7 +160,7 @@ def simulate(
 
         # pump energy into the system
         if pump_energy and t > INTERVAL:
-            u = -sd.unit(r_tray_dot) * accel
+            u = -vs.unit(r_tray_dot) * accel
 
         if stabilize and t > 3 * INTERVAL:
             # initialize stabilization

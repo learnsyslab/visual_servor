@@ -3,26 +3,19 @@
 import argparse
 import glob
 from pathlib import Path
-import pickle
-import yaml
 
 import numpy as np
 import rosbag
 import matplotlib.pyplot as plt
-from spatialmath.base import q2r, rotz
-from spatialmath import UnitQuaternion
-from scipy.spatial.transform import Rotation
 
 import mobile_manipulation_central as mm
 from mobile_manipulation_central import ros_utils
 
-import IPython
-
 
 def parse_bag_dir(directory):
-    """Parse params pickle path and bag path from a data directory.
+    """Parse bag path from a data directory.
 
-    Returns (param_path, bag_path), as strings."""
+    Returns bag path as a string."""
     dir_path = Path(directory)
 
     bag_files = glob.glob(dir_path.as_posix() + "/*.bag")

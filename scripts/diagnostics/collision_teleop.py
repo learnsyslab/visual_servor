@@ -5,7 +5,7 @@ from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Twist
 
 import mobile_manipulation_central as mm
-import serving_demo as sd
+import visual_servor as vs
 
 RATE = 100
 
@@ -20,7 +20,7 @@ class CollisionNode:
         self.points = []
         self.cmd_vel_des = np.zeros(3)
 
-        self.collision_ellipse = sd.CollisionEllipse(rx=0.8, ry=0.6, center=[0.25, 0])
+        self.collision_ellipse = vs.CollisionEllipse(rx=0.8, ry=0.6, center=[0.25, 0])
 
         self.scan_sub = rospy.Subscriber(
             "/front/scan", LaserScan, self._scan_cb, queue_size=1

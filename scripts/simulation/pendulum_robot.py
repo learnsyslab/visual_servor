@@ -6,7 +6,7 @@ from qpsolvers import solve_qp
 from scipy.linalg import expm
 from scipy.spatial.transform import Rotation
 
-import serving_demo as sd
+import visual_servor as vs
 import mobile_manipulation_central as mm
 
 import IPython
@@ -161,7 +161,7 @@ def simulate(
     if not static:
         # tensile forces must be positive
         fts = cp.Variable(4, nonneg=True)
-        ft = cp.sum([-f * sd.unit(a) for f, a in zip(fts, anchors)])
+        ft = cp.sum([-f * vs.unit(a) for f, a in zip(fts, anchors)])
 
         # no torque because forces all act through the origin
         constraints.append(wt == cp.hstack((np.zeros(3), ft)))
@@ -169,7 +169,7 @@ def simulate(
     problem = cp.Problem(objective, constraints)
 
     # LQR
-    lqr_gain = sd.pendulum_lqr_gain(length=pendulum_length, use_integral_term=True)
+    lqr_gain = vs.pendulum_lqr_gain(length=pendulum_length, use_integral_term=True)
 
     ts = []
     us = []
@@ -199,7 +199,7 @@ def simulate(
         ρ_dot = (r_tray_dot - v_ee) / pendulum_length
 
         # LQR state
-        x = sd.pendulum_lqr_state(Δr=Δr, ρ=ρ, v_ee=v_ee, ρ_dot=ρ_dot, Δr_int=Δr_int)
+        x = vs.pendulum_lqr_state(Δr=Δr, ρ=ρ, v_ee=v_ee, ρ_dot=ρ_dot, Δr_int=Δr_int)
         print(f"x = {x}")
 
         u = np.zeros(3)

@@ -5,8 +5,8 @@ import rospy
 import numpy as np
 
 import mobile_manipulation_central as mm
-import serving_demo as sd
-from serving_demo.msg import SystemState
+import visual_servor as vs
+from visual_servor.msg import SystemState
 
 
 RATE = 125  # Hz
@@ -44,7 +44,7 @@ def main():
     # load pendulum calibration
     r_te_e = np.array(
         mm.load_pkg_config(
-            pkg_name="serving_demo", relpath="config/pendulum_calibration.yaml"
+            pkg_name="visual_servor", relpath="config/pendulum_calibration.yaml"
         )["r_te_e"]
     )
 
@@ -61,7 +61,7 @@ def main():
     signal_handler = mm.RobotSignalHandler(robot, args.dry_run)
 
     model = mm.MobileManipulatorKinematics(tool_link_name="ur10_arm_tool0")
-    stabilizer = sd.PendulumStabilizer(model=model, use_integral_term=True)
+    stabilizer = vs.PendulumStabilizer(model=model, use_integral_term=True)
 
     # wait until robot feedback has been received
     print("Waiting for robot...")
@@ -78,9 +78,9 @@ def main():
     stabilizing = False
 
     if args.trajectory == "slow":
-        traj = sd.TrapezoidalTrajectory(a=0.5, t1=2, t2=2)
+        traj = vs.TrapezoidalTrajectory(a=0.5, t1=2, t2=2)
     elif args.trajectory == "fast":
-        traj = sd.TrapezoidalTrajectory(a=1, t1=1, t2=3)
+        traj = vs.TrapezoidalTrajectory(a=1, t1=1, t2=3)
     else:
         raise ValueError("unknown trajectory")
 

@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 
-import serving_demo as sd
+import visual_servor as vs
 
 
 rx = 0.75
@@ -11,10 +11,10 @@ A = np.diag([1.0 / rx**2, 1.0 / ry**2])
 c = np.array([0.25, 0])
 
 p = np.array([0.5, 0.1])
-n = sd.unit(A @ (p - c))
+n = vs.unit(A @ (p - c))
 
 r = p + n
-pn = c + sd.unit(p - c)
+pn = c + vs.unit(p - c)
 
 plt.figure()
 ax = plt.gca()

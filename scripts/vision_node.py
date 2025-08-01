@@ -12,8 +12,8 @@ import sensor_msgs.point_cloud2 as pc2
 import numpy as np
 import ros_numpy
 
-import serving_demo as sd
-from serving_demo.msg import Target
+import visual_servor as vs
+from visual_servor.msg import Target
 
 # control rate (Hz)
 RATE = 20
@@ -37,9 +37,9 @@ class VisionNode:
         self.bridge = CvBridge()
 
         self.rgb_image = np.zeros(
-            (sd.MODEL_RGB_IMAGE_HEIGHT, sd.MODEL_RGB_IMAGE_WIDTH, 3)
+            (vs.MODEL_RGB_IMAGE_HEIGHT, vs.MODEL_RGB_IMAGE_WIDTH, 3)
         )
-        self.target = sd.Person()
+        self.target = vs.Person()
         self.target_lock = Lock()
         self.people = []
 
@@ -62,7 +62,7 @@ class VisionNode:
 
     def _rgb_cb(self, msg):
         rgb_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-        self.rgb_image = cv2.resize(rgb_image, sd.MODEL_RGB_IMAGE_SIZE)
+        self.rgb_image = cv2.resize(rgb_image, vs.MODEL_RGB_IMAGE_SIZE)
 
         results = self.model.predict(
             self.rgb_image, max_det=MAX_PEOPLE, conf=DET_CONFIDENCE, verbose=False
@@ -76,7 +76,7 @@ class VisionNode:
         for i in range(n_det):
             cls = results[0].boxes.cls[i].cpu().numpy()
             contours = np.int32([results[0].masks.xy[i]])
-            person = sd.Person.from_contours(cls, contours)
+            person = vs.Person.from_contours(cls, contours)
             if person.hand_up:
                 hand_up_ids.append(i)
             people.append(person)
@@ -155,9 +155,7 @@ def main():
     last_display_time = 0
 
     t0 = rospy.Time.now().to_sec()
-    t = t0
     while not rospy.is_shutdown():
-        t_prev = t
         t = rospy.Time.now().to_sec() - t0
 
         if args.display and t - last_display_time >= DISPLAY_TIME_INTERVAL:

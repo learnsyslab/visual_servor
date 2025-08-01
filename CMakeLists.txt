@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10.2)
-project(serving_demo)
+project(visual_servor)
 
 find_package(catkin REQUIRED COMPONENTS
   rospy

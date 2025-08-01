@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <package format="2">
-  <name>serving_demo</name>
+  <name>visual_servor</name>
   <version>0.1.0</version>
   <description>Robot waiter serving demo.</description>
   <maintainer email="adam.heins@robotics.utias.utoronto.ca">Adam Heins</maintainer>

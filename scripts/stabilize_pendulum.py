@@ -66,7 +66,9 @@ def main():
         while not rospy.is_shutdown():
             t = rospy.Time.now().to_sec() - t0
 
-            cmd_vel = stabilizer.update(robot.q, tray.position, dt, base=args.base)
+            cmd_vel = stabilizer.update(
+                robot.q, tray.position, dt, base=args.base, verbose=True
+            )
             if args.base:
                 cmd_vel = np.concatenate((cmd_vel, np.zeros(6)))
             else:

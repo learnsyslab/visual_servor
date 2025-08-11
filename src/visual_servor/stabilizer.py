@@ -83,11 +83,10 @@ class PendulumStabilizer:
         self.vel_max = vel_max
 
         # QP data matrices
-        self.P = np.diag(np.append(np.ones(6), 0.01))
-        self.q = np.append(np.zeros(6), -1)
+        self.P = np.eye(7)
+        self.q = np.append(np.zeros(6), 1)
         self.ub = np.append(joint_vel_max * np.ones(6), 1)
         self.lb = np.append(-joint_vel_max * np.ones(6), 0)
-        self.b = np.zeros(6)
 
         self.tray_pos_prev = None
         self.v_ee = np.zeros(3)
@@ -123,7 +122,7 @@ class PendulumStabilizer:
         self.tray_pos_prev = tray_position
         return self.tray_vel_filter.update(v_tray_raw, dt)
 
-    def _compute_input_lqr(self, r_ew_w, r_tw_w, v_tray, dt):
+    def _compute_input_lqr(self, r_ew_w, r_tw_w, v_tray, dt, verbose=False):
         Δr = r_ew_w - self.r_ee_d
         if self.use_integral_term:
             self.Δr_int = self.Δr_int + dt * Δr
@@ -138,23 +137,48 @@ class PendulumStabilizer:
         u = np.zeros(3)
         u[:2] = -self.lqr_gain @ x
 
-        print(f"x = {x}")
-        print(f"u = {u}")
-        # raise ValueError()
+        if verbose:
+            print(f"LQR state = {x}")
+            print(f"LQR input = {u}")
 
         return u
 
-    def _compute_arm_cmd_vel(q, solver):
+    def _compute_arm_cmd_vel(self, q, solver):
+        """Compute arm joint velocities to achieve desired task-space velocity.
+
+        Solves the differential inverse kinematics problem using a QP.
+
+        Parameters
+        ----------
+        q : np.ndarray
+            The current joint positions (of the full system, not just the arm).
+        solver : str
+            The name of the QP solver to use.
+
+        Returns
+        -------
+        : np.ndarray or None
+            The arm joint velocities or ``None`` if the QP fails to solve.
+        """
+
         # diff IK QP
         J = self.model.jacobian(q)
         ξ_ee = np.concatenate((self.v_ee, np.zeros(3)))
-        A = np.hstack((J[:, 3:], -ξ_ee.reshape((6, 1))))
+
+        # We have an equality constraint of the form:
+        #   J @ v == (1 - s) * ξ,
+        # where s is a slack variable between 0 and 1.
+        # When s == 0, the desired EE velocity ξ is exactly satisified, while
+        # higher values of s ensure the direction of motion is correct while
+        # reducing the magnitude.
+        A = np.hstack((J[:, 3:], ξ_ee.reshape((6, 1))))
+        b = ξ_ee
 
         x = solve_qp(
             P=self.P,
             q=self.q,
             A=A,
-            b=self.b,
+            b=b,
             lb=self.lb,
             ub=self.ub,
             solver=solver,
@@ -163,9 +187,12 @@ class PendulumStabilizer:
         if x is None:
             return None
         arm_cmd_vel = x[:6]
+        print(f"s = {x[6]}")
         return arm_cmd_vel
 
-    def update(self, q, tray_position, dt, base=False, solver="quadprog"):
+    def update(
+        self, q, tray_position, dt, base=False, solver="quadprog", verbose=False
+    ):
         """Compute the next velocity command to stabilize the pendulum.
 
         Parameters
@@ -181,6 +208,8 @@ class PendulumStabilizer:
             ``False`` to generate a command for the arm.
         solver : str
             The solver to use for solving the QP when generating arm commands.
+        verbose : bool
+            Set to ``True`` to print out extra information.
 
         Returns
         -------
@@ -196,7 +225,7 @@ class PendulumStabilizer:
         r_tw_w = tray_position + C_we @ self.tray_offset
 
         # compute acceleration input
-        u = self._compute_input_lqr(r_ew_w, r_tw_w, v_tray, dt)
+        u = self._compute_input_lqr(r_ew_w, r_tw_w, v_tray, dt, verbose=verbose)
         u = np.clip(u, -self.accel_max, self.accel_max)
 
         # integrate to get commanded velocity (in the world frame)

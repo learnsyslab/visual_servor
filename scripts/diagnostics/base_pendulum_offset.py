@@ -16,7 +16,7 @@ def main():
     rospy.init_node("base_pendulum_node")
 
     tray = mm.ViconObjectInterface("ThingRoundTray")
-    base = mm.ViconObjectInterface("ThingBase_3")
+    base = mm.ViconObjectInterface("ThingBase_4")
 
     q0 = np.array([-1.0, 0, 0, 1.5708, -1.5708, 1.5708, 0,  1.5708, -0.2618])
     model = mm.MobileManipulatorKinematics(tool_link_name="ur10_arm_tool0")

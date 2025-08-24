@@ -99,7 +99,7 @@ class PendulumStabilizer:
 
         # offset of actual tray center compared to vicon model tray center
         self.tray_offset = np.append(-r_te_e[:2], 0)
-        self.length = np.abs(r_te_e[2]) - 0.1  # TODO
+        self.length = np.abs(r_te_e[2]) - 0.15  # TODO
 
         self.lqr_gain = pendulum_lqr_gain(
             length=self.length, use_integral_term=self.use_integral_term

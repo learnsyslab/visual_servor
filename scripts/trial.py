@@ -9,7 +9,7 @@ import visual_servor as vs
 from visual_servor.msg import SystemState
 
 
-RATE = 125  # Hz
+RATE = 25  # Hz
 
 CONVERGENCE_TOL = 1e-2
 
@@ -56,7 +56,6 @@ def main():
     dt = 1.0 / RATE
 
     robot = mm.MobileManipulatorROSInterface()
-    # TODO this will depend on tray type as well
     tray = mm.ViconObjectInterface("ThingRoundTray")
     signal_handler = mm.RobotSignalHandler(robot, args.dry_run)
 
@@ -87,6 +86,8 @@ def main():
     # position gain
     K = 1
 
+    arm_cmd_vel = np.zeros(6)
+
     try:
         t0 = rospy.Time.now().to_sec()
         t = 0
@@ -102,8 +103,6 @@ def main():
             base_qd = np.array([qd, 0, 0]) + q0[:3]
             base_err = base_qd - robot.q[:3]
             base_cmd_vel = K * base_err + base_vd
-
-            arm_cmd_vel = np.zeros(6)
 
             base_converged = (
                 np.linalg.norm(base_err) <= CONVERGENCE_TOL
@@ -141,7 +140,6 @@ def main():
             t = now.to_sec() - t0
 
             base_cmd_vel = np.zeros(3)
-            arm_cmd_vel = np.zeros(6)
 
             if args.tray == "static":
                 if t >= t1 + STATIONARY_DURATION_2:
@@ -156,7 +154,7 @@ def main():
                         stabilizing = True
                         print("stabilizing")
                     else:
-                        arm_cmd_vel = stabilizer.update(robot.q, tray.position, dt)
+                        base_cmd_vel = stabilizer.update(robot.q, tray.position, dt, base=True)
                 else:
                     break
             else:

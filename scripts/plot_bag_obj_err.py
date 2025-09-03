@@ -14,8 +14,8 @@ from upright_ros_interface.parsing import parse_object_error
 import IPython
 
 
-# TRAY_VICON_NAME = "ThingRoundTray"
-TRAY_VICON_NAME = "ThingWoodTray"
+TRAY_VICON_NAME = "ThingRoundTray"
+# TRAY_VICON_NAME = "ThingWoodTray"
 
 
 def get_bag_topics(bag):

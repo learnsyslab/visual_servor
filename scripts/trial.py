@@ -116,8 +116,6 @@ def main():
             # send command to the robot
             if not args.dry_run:
                 robot.publish_cmd_vel(cmd_vel, bodyframe=False)
-            # else:
-            #     print(cmd_vel)
 
             msg = SystemState()
             msg.header.stamp = now

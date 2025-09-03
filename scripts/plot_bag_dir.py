@@ -8,7 +8,6 @@ import numpy as np
 import rosbag
 import matplotlib.pyplot as plt
 
-import mobile_manipulation_central as mm
 from mobile_manipulation_central import ros_utils
 
 

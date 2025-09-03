@@ -23,7 +23,7 @@ USE_COLLISION_AVOIDANCE = True
 
 
 # control rate (Hz)
-RATE = 125
+RATE = 25
 
 TARGET_TIME_DELTA_MAX = 3
 

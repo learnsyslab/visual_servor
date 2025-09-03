@@ -16,7 +16,7 @@ import visual_servor as vs
 from visual_servor.msg import Target
 
 # control rate (Hz)
-RATE = 20
+RATE = 25
 
 # only display a new image after this much time has elapsed
 DISPLAY_TIME_INTERVAL = 0.1
@@ -44,6 +44,9 @@ class VisionNode:
         self.people = []
 
         self.target_pub = rospy.Publisher("/serving/target", Target, queue_size=1)
+        self.annotated_img_pub = rospy.Publisher(
+            "/serving/annotated_image", Image, queue_size=1
+        )
 
         self.rgb_sub = rospy.Subscriber(
             "/camera/color/image_raw", Image, self._rgb_cb, queue_size=1
@@ -123,6 +126,11 @@ class VisionNode:
             else:
                 image[person.mask, :] = 255
             cv2.circle(image, person.center, 5, [0, 0, 255], -1)
+
+        # publish for logging purposes
+        img_msg = self.bridge.cv2_to_imgmsg(image, encoding="passthrough")
+        self.annotated_img_pub.publish(img_msg)
+
         return image
 
     def publish_target(self):
@@ -135,7 +143,9 @@ class VisionNode:
         msg.depth_valid = self.target.depth_valid
         msg.depth = self.target.depth
         if self.target.depth_valid and self.target.depth < 1:
-            print(f"depth valid but depth = {self.target.depth}, hand_up = {self.target.hand_up}")
+            print(
+                f"depth valid but depth = {self.target.depth}, hand_up = {self.target.hand_up}"
+            )
         self.target_pub.publish(msg)
 
 
@@ -158,7 +168,7 @@ def main():
     while not rospy.is_shutdown():
         t = rospy.Time.now().to_sec() - t0
 
-        if args.display and t - last_display_time >= DISPLAY_TIME_INTERVAL:
+        if args.display:  # and t - last_display_time >= DISPLAY_TIME_INTERVAL:
             last_display_time = t
             image = node.annotated_image()
             cv2.imshow("image", image)

@@ -19,6 +19,7 @@ ROSBAG_TOPICS = [
         "--regex", "/ur10/(.*)",
         "--regex", "/vicon/(.*)",
         "--regex", "/serving/(.*)",
+        "/camera/color/image_raw",
 ]
 # fmt: on
 

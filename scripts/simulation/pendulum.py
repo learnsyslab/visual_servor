@@ -35,6 +35,7 @@ def simulate(
     pendulum_length=0.3,
     obj_height=0.1,
     accel=3,
+    obj_xy_offset=None,
     static=False,
     pump_energy=False,
     stabilize=False,
@@ -42,7 +43,35 @@ def simulate(
     use_integral_term=True,
     plot=False,
 ):
-    """TODO"""
+    """Simulation the pendulum-object system.
+
+    Parameters
+    ----------
+    pendulum_length : float
+        Length of the pendulum (distance from pivot to top of tray).
+    obj_height : float
+        Height of the object (which is a box).
+    accel : float
+        Maximum acceleration of the tray.
+    obj_xy_offset : array-like, shape (2,) or None
+        Offset of the object from the center of the tray.
+    static : bool
+        If ``True``, simulate a static tray (no pendulum dynamics).
+    pump_energy : bool
+        If ``True``, after the first interval, apply acceleration in the
+        direction opposite the velocity of the tray.
+    stabilize : bool
+        If ``True``, after the main trajectory, use LQR to stabilize the
+        pendulum.
+    point_mass : bool
+        If ``True``, model the tray and object as point masses at the
+        end of the pendulum.
+    use_integral_term : bool
+        If ``True``, include an the integral of position error in the LQR
+        controller.
+    plot : bool
+        If ``True``, plot the results. Useful for debugging.
+    """
 
     def input_accel(t):
         """World-frame tray acceleration.
@@ -57,21 +86,26 @@ def simulate(
             return np.array([-accel, 0, 0])
         return np.zeros(3)
 
+    traj = vs.TrapezoidalTrajectory(a=accel, t1=INTERVAL, t2=2 * INTERVAL)
+
     duration = BASE_DURATION
     if stabilize:
         duration += STABILIZE_TIME
 
     N = duration * STEPS_PER_SEC
 
-    # NOTE: we define pendulum length as the distance to the top of the tray
+    if obj_xy_offset is None:
+        obj_xy_offset = np.zeros(2)
+    obj_offset = np.append(obj_xy_offset, 0)
 
+    # NOTE: we define pendulum length as the distance to the top of the tray
     tray_z = -pendulum_length - 0.5 * TRAY_HEIGHT
     tray = rg.Cylinder(length=TRAY_HEIGHT, radius=TRAY_RADIUS, center=[0, 0, tray_z])
     tray_params = tray.uniform_density_params(mass=0.5)
 
     half_extents = [OBJ_BASE_HALF_EXTENT, OBJ_BASE_HALF_EXTENT, obj_height / 2]
     box_z = -pendulum_length + 0.5 * obj_height
-    box = rg.Box(half_extents, center=[0, 0, box_z])
+    box = rg.Box(half_extents, center=[0, 0, box_z] + obj_offset)
     box_params = box.uniform_density_params(mass=0.5)
 
     if point_mass:
@@ -123,9 +157,14 @@ def simulate(
     # F = np.array([[0, 0, -1], [1, 1, -MU], [1, -1, -MU], [-1, -1, -MU], [-1, 1, -MU]])
 
     # initial state
-    ξ = rg.SV.zero()
+    # ξ = rg.SV.zero()
     r = np.zeros(3)
     C = np.eye(3)  # this is C_wb
+    rd = r.copy()
+
+    # vw = np.zeros(3)
+    r_dot = np.zeros(3)
+    ω = np.zeros(3)
 
     # spatial acceleration: this can be computed analytically
     ωdot = cp.Parameter(3)
@@ -172,46 +211,59 @@ def simulate(
     lqr_gain = vs.pendulum_lqr_gain(
         length=pendulum_length, use_integral_term=use_integral_term
     )
-    stabilizing = False
     Δr_int = np.zeros(3) if use_integral_term else None
 
     ts = []
+    rs = []
+    rds = []
+    r_dots = []
+    ωs = []
     us = []
     φs = []
-    ξs = []
     fcs = []
     ss = []
 
     t_fail = None
 
+    Kp = 10
+    Kv = 2 * np.sqrt(Kp)
+
     t = 0
     for i in range(N):
         t = i * TIMESTEP
-        u = input_accel(t)
 
+        v = C.T @ r_dot
         r_tray = r + C @ tray_params.com
-        r_tray_dot = C @ (ξ.linear + np.cross(ξ.angular, tray_params.com))
+        r_tray_dot = r_dot + C @ np.cross(ω, tray_params.com)
+
+        # desired values
+        # u = input_accel(t)
+        rxd, vxd, axd = traj.sample(t)
+        rd = np.array([rxd, 0, 0])
+        r_dot_d = np.array([vxd, 0, 0])  # TODO naming is not great
+        ad = np.array([axd, 0, 0])
+
+        # basic feedback control
+        # u = ad + Kp * (rd - r) + Kv * (r_dot_d - r_dot)
+        u = ad
+
+        # u = np.array([ux, 0, 0])
 
         # pump energy into the system
         if pump_energy and t > INTERVAL:
             u = -vs.unit(r_tray_dot) * accel
 
         if stabilize and t > BASE_DURATION:
-            # initialize stabilization
-            if not stabilizing:
-                r_d = r.copy()
-            stabilizing = True
 
             # TODO also add u check here
-            if np.linalg.norm(ξ.vec) < 0.01:
-                print(f"done stabilizing at t = {t}")
-                break
-
-            r_dot = C @ ξ.linear
+            # if np.linalg.norm(ξ.vec) < 0.01:
+            #     print(f"done stabilizing at t = {t}")
+            #     break
 
             # all quantities in global frame
-            Δr = r - r_d
+            Δr = r - rd
             if use_integral_term:
+                # TODO could include an anti-windup term here
                 Δr_int = Δr_int + TIMESTEP * Δr
             ρ = (r_tray - r) / pendulum_length
             ρ_dot = (r_tray_dot - r_dot) / pendulum_length
@@ -227,6 +279,8 @@ def simulate(
             u_norm = np.linalg.norm(u)
             if u_norm > accel:
                 u = u / u_norm * accel
+        # else:
+        #     rd = r.copy()
 
         # solve for spatial acceleration
         if static:
@@ -236,12 +290,13 @@ def simulate(
             ωdot.value = np.linalg.lstsq(
                 combined_params.I,
                 np.cross(combined_params.h, C.T @ (GRAVITY - u))
-                - np.cross(ξ.angular, combined_params.I @ ξ.angular),
+                - np.cross(ω, combined_params.I @ ω),
                 rcond=None,
             )[0]
-            vdot.value = C.T @ u - np.cross(ξ.angular, ξ.linear)
+            vdot.value = C.T @ u - np.cross(ω, v)
 
         # gravity and Coriolis forces on each body
+        ξ = rg.SV(linear=v, angular=ω)
         rem_p.value = ξ.adjoint().T @ M_p @ ξ.vec + mG_p @ C.T @ GRAVITY
         rem_o.value = ξ.adjoint().T @ M_o @ ξ.vec + mG_o @ C.T @ GRAVITY
 
@@ -258,25 +313,32 @@ def simulate(
             # TODO may need to break in the pump_energy case
             # break
 
-        # integrate forward in time
-        ξ = ξ + rg.SV(linear=vdot.value, angular=ωdot.value) * TIMESTEP
-        r = r + C @ ξ.linear * TIMESTEP
-        C = C @ expm(rg.skew3(ξ.angular) * TIMESTEP)
+        # integrate linear part
+        r_dot = r_dot + u * TIMESTEP
+        r = r + r_dot * TIMESTEP
+
+        # integrate angular part
+        ω = ω + ωdot.value * TIMESTEP
+        C = C @ expm(rg.skew3(ω) * TIMESTEP)
 
         ts.append(t)
         us.append(u)
         φs.append(Rotation.from_matrix(C).as_rotvec())
-
-        # rotate into the world frame
-        ξs.append(np.concatenate((C @ ξ.angular, C @ ξ.linear)))
-
+        rs.append(r)
+        rds.append(rd)
+        ωs.append(C @ ω)  # rotate into world frame
+        r_dots.append(r_dot)
         fcs.append(fc.value)
 
     ss = np.array(ss)
     us = np.array(us)
     φs = np.array(φs)
-    ξs = np.array(ξs)
+    # ξs = np.array(ξs)
     fcs = np.array(fcs)
+    rs = np.array(rs)
+    rds = np.array(rds)
+    r_dots = np.array(r_dots)
+    ωs = np.array(ωs)
 
     fts = np.linalg.norm(fcs[:, :, :2], axis=2)
     fns = fcs[:, :, 2]
@@ -285,6 +347,8 @@ def simulate(
     s_min = np.min(ss)
 
     # φs[φs < 0] += 2 * np.pi
+
+    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
     if plot:
         plt.figure()
@@ -295,6 +359,19 @@ def simulate(
         plt.grid()
         plt.xlabel("Time [s]")
         plt.ylabel("Acceleration [m/s^2]")
+        plt.legend()
+
+        plt.figure()
+        plt.title("Position")
+        plt.plot(ts, rs[:, 0], label="x")
+        plt.plot(ts, rs[:, 1], label="y")
+        plt.plot(ts, rs[:, 2], label="z")
+        plt.plot(ts, rds[:, 0], linestyle="--", label="xd", color=colors[0])
+        plt.plot(ts, rds[:, 1], linestyle="--", label="yd", color=colors[1])
+        plt.plot(ts, rds[:, 2], linestyle="--", label="zd", color=colors[2])
+        plt.grid()
+        plt.xlabel("Time [s]")
+        plt.ylabel("Position [m]")
         plt.legend()
 
         plt.figure()
@@ -309,9 +386,9 @@ def simulate(
 
         plt.figure()
         plt.title("Linear velocity")
-        plt.plot(ts, ξs[:, 3], label="x")
-        plt.plot(ts, ξs[:, 4], label="y")
-        plt.plot(ts, ξs[:, 5], label="z")
+        plt.plot(ts, r_dots[:, 0], label="x")
+        plt.plot(ts, r_dots[:, 1], label="y")
+        plt.plot(ts, r_dots[:, 2], label="z")
         plt.grid()
         plt.xlabel("Time [s]")
         plt.ylabel("Linear velocity [m/s]")
@@ -319,9 +396,9 @@ def simulate(
 
         plt.figure()
         plt.title("Angular velocity")
-        plt.plot(ts, ξs[:, 0], label="x")
-        plt.plot(ts, ξs[:, 1], label="y")
-        plt.plot(ts, ξs[:, 2], label="z")
+        plt.plot(ts, ωs[:, 0], label="x")
+        plt.plot(ts, ωs[:, 1], label="y")
+        plt.plot(ts, ωs[:, 2], label="z")
         plt.grid()
         plt.xlabel("Time [s]")
         plt.ylabel("Angular velocity [rad/s]")
@@ -343,11 +420,14 @@ def simulate(
     return s_min, t_fail, μ_max
 
 
-def main():
-    # s_min, t_fail = simulate(stabilize=True, plot=True)
-    # print(f"s = {s_min}, t = {t_fail}")
+def simulate_parameter_error():
+    # TODO in this case I do want to plot the damn thing - probably need to
+    # save these results or put in a library function
+    s_min = simulate(stabilize=True, use_integral_term=False, plot=True)[0]
 
-    print(f"max static acceleration = {MU * np.linalg.norm(GRAVITY)}")
+
+def simulate_parameter_variation():
+    # print(f"max static acceleration = {MU * np.linalg.norm(GRAVITY)}")
 
     # TODO should I also test the time intervals - that is, the trajectory
     # shape? this is probably too complicated
@@ -382,10 +462,12 @@ def main():
         s_min = simulate(pendulum_length=L, stabilize=True)[0]
         print(f"L = {L}, s_min = {s_min}")
 
-    # failure case
-    # s_min, t_fail, _ = simulate(pump_energy=True)
-    # print(f"s = {s_min}, t = {t_fail}")
+def simulate_pump_energy():
+    s_min, t_fail, _ = simulate(pump_energy=True)
+    print(f"s = {s_min}, t = {t_fail}")
 
 
 if __name__ == "__main__":
-    main()
+    # s_min, t_fail = simulate(stabilize=True, plot=True)
+    # print(f"s = {s_min}, t = {t_fail}")
+    simulate_parameter_error()

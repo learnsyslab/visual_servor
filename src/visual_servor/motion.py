@@ -6,6 +6,7 @@ class TrapezoidalTrajectory:
         if t2 is None:
             t2 = t1
         assert t2 >= t1
+        # assumed symmetric: t1 and t2 are the vertices
         self.t1 = t1
         self.t2 = t2
         self.duration = t1 + t2
@@ -26,20 +27,24 @@ class TrapezoidalTrajectory:
             # acceleration
             vd = self.a * t
             qd = 0.5 * self.a * t**2
+            ad = self.a
         elif t <= self.t2:
             # constant velocity
             vd = self.v
             qd = self.q1 + (t - self.t1) * self.v
+            ad = 0
         elif t <= self.duration:
             # deceleration
             s = t - self.t2
             vd = self.v - s * self.a
             qd = self.q2 + self.v * s - 0.5 * self.a * s**2
+            ad = -self.a
         else:
             # end position
             vd = 0
             qd = self.qf
-        return qd, vd
+            ad = 0
+        return qd, vd, ad
 
 
 def change_velocity(v, vd, max_a, dt):

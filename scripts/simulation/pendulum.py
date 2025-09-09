@@ -12,18 +12,23 @@ import IPython
 np.set_printoptions(precision=4, suppress=True)
 
 
-INTERVAL = 4
 STEPS_PER_SEC = 100
 TIMESTEP = 1 / STEPS_PER_SEC
 
+INTERVAL = 2
+STABILIZE_TIME = 20
+WAIT_TIME = 2
+BASE_DURATION = 3 * INTERVAL + WAIT_TIME
+
 GRAVITY = np.array([0, 0, -9.81])
 
+# tray is modelled as a cylinder
 TRAY_RADIUS = 0.2
-CYLINDER_HEIGHT = 0.001
+TRAY_HEIGHT = 0.001
 OBJ_BASE_HALF_EXTENT = 0.05
 
 # object-tray friction coefficient
-MU = 0.5
+MU = 0.25
 
 
 def simulate(
@@ -33,27 +38,56 @@ def simulate(
     static=False,
     pump_energy=False,
     stabilize=False,
-    plot=True,
+    point_mass=False,
+    use_integral_term=True,
+    plot=False,
 ):
+    """TODO"""
+
     def input_accel(t):
+        """World-frame tray acceleration.
+
+        Constant acceleration, zero acceleration, constant negative acceleration.
+        """
         if t <= INTERVAL:
             return np.array([accel, 0, 0])
         elif t <= 2 * INTERVAL:
+            return np.zeros(3)
+        elif t <= 3 * INTERVAL:
             return np.array([-accel, 0, 0])
         return np.zeros(3)
 
-    duration = 5 * INTERVAL if stabilize else 3 * INTERVAL
+    duration = BASE_DURATION
+    if stabilize:
+        duration += STABILIZE_TIME
+
     N = duration * STEPS_PER_SEC
 
-    tray = rg.Cylinder(
-        length=CYLINDER_HEIGHT, radius=TRAY_RADIUS, center=[0, 0, -pendulum_length]
-    )
+    # NOTE: we define pendulum length as the distance to the top of the tray
+
+    tray_z = -pendulum_length - 0.5 * TRAY_HEIGHT
+    tray = rg.Cylinder(length=TRAY_HEIGHT, radius=TRAY_RADIUS, center=[0, 0, tray_z])
     tray_params = tray.uniform_density_params(mass=0.5)
 
     half_extents = [OBJ_BASE_HALF_EXTENT, OBJ_BASE_HALF_EXTENT, obj_height / 2]
-    box_center = tray.center + [0, 0, 0.5 * (obj_height + CYLINDER_HEIGHT)]
-    box = rg.Box(half_extents, center=box_center)
+    box_z = -pendulum_length + 0.5 * obj_height
+    box = rg.Box(half_extents, center=[0, 0, box_z])
     box_params = box.uniform_density_params(mass=0.5)
+
+    if point_mass:
+        point_mass_position = np.array([0, 0, -pendulum_length])
+        tray_params = rg.InertialParameters(
+            mass=0.5,
+            com=point_mass_position,
+            H=np.zeros((3, 3)),
+            translate_from_com=True,
+        )
+        box_params = rg.InertialParameters(
+            mass=0.5,
+            com=point_mass_position,
+            H=np.zeros((3, 3)),
+            translate_from_com=True,
+        )
 
     combined_params = tray_params + box_params
 
@@ -86,7 +120,7 @@ def simulate(
     )
 
     # friction matrix: F @ f <= 0 means f inside friction cone
-    F = np.array([[0, 0, -1], [1, 1, -MU], [1, -1, -MU], [-1, -1, -MU], [-1, 1, -MU]])
+    # F = np.array([[0, 0, -1], [1, 1, -MU], [1, -1, -MU], [-1, -1, -MU], [-1, 1, -MU]])
 
     # initial state
     ξ = rg.SV.zero()
@@ -113,18 +147,15 @@ def simulate(
     wt = cp.Variable(6)
 
     # minimize the shear contact forces
-    # W = np.diag([1, 1, 0])
-    # objective = cp.Minimize(cp.sum([cp.quad_form(f, W, assume_PSD=True) for f in fc]))
     s = cp.Variable(1)
-    objective = cp.Minimize(s)
-    # objective = cp.Minimize(cp.sum([cp.norm(f[:2]) for f in fc]))
+    objective = cp.Maximize(s)
 
     # Newton-Euler equations (force-torque balance)
     constraints = [rem_o + wc == M_o @ ξdot, rem_p - wc + wt == M_p @ ξdot]
 
     # friction constraints
     # constraints.extend([F @ f <= s for f in fc])
-    constraints.extend([cp.norm(f[:2]) <= MU * f[2] + s for f in fc])
+    constraints.extend([MU * f[2] - cp.norm(f[:2]) >= s for f in fc])
     # constraints.extend([f[2] >= 0 for f in fc])
 
     if not static:
@@ -138,8 +169,11 @@ def simulate(
     problem = cp.Problem(objective, constraints)
 
     # LQR
-    lqr_gain = vs.pendulum_lqr_gain(length=pendulum_length)
+    lqr_gain = vs.pendulum_lqr_gain(
+        length=pendulum_length, use_integral_term=use_integral_term
+    )
     stabilizing = False
+    Δr_int = np.zeros(3) if use_integral_term else None
 
     ts = []
     us = []
@@ -162,24 +196,37 @@ def simulate(
         if pump_energy and t > INTERVAL:
             u = -vs.unit(r_tray_dot) * accel
 
-        if stabilize and t > 3 * INTERVAL:
+        if stabilize and t > BASE_DURATION:
             # initialize stabilization
             if not stabilizing:
                 r_d = r.copy()
             stabilizing = True
 
+            # TODO also add u check here
+            if np.linalg.norm(ξ.vec) < 0.01:
+                print(f"done stabilizing at t = {t}")
+                break
+
             r_dot = C @ ξ.linear
 
             # all quantities in global frame
             Δr = r - r_d
+            if use_integral_term:
+                Δr_int = Δr_int + TIMESTEP * Δr
             ρ = (r_tray - r) / pendulum_length
             ρ_dot = (r_tray_dot - r_dot) / pendulum_length
 
-            # LQR state
-            x = np.concatenate((Δr[:2], ρ[:2], r_dot[:2], ρ_dot[:2]))
+            x = vs.pendulum_lqr_state(
+                Δr=Δr, ρ=ρ, v_ee=r_dot, ρ_dot=ρ_dot, Δr_int=Δr_int
+            )
 
             u = np.zeros(3)
             u[:2] = -lqr_gain @ x
+
+            # limit acceleration
+            u_norm = np.linalg.norm(u)
+            if u_norm > accel:
+                u = u / u_norm * accel
 
         # solve for spatial acceleration
         if static:
@@ -206,8 +253,10 @@ def simulate(
             break
 
         ss.append(s.value)
-        if s.value > 0 and t_fail is None:
+        if s.value < 0 and t_fail is None:
             t_fail = t
+            # TODO may need to break in the pump_energy case
+            # break
 
         # integrate forward in time
         ξ = ξ + rg.SV(linear=vdot.value, angular=ωdot.value) * TIMESTEP
@@ -229,12 +278,11 @@ def simulate(
     ξs = np.array(ξs)
     fcs = np.array(fcs)
 
-    # fts = np.linalg.norm(fcs[:, :, :2], axis=2)
-    # fns = fcs[:, :, 2]
-    # μs = fts / fns
-    # μ_max = np.max(μs)
-    # print(f"max mu required = {μ_max}")
-    # print(f"max s required = {np.max(ss)}")
+    fts = np.linalg.norm(fcs[:, :, :2], axis=2)
+    fns = fcs[:, :, 2]
+    μs = fts / fns
+    μ_max = np.max(μs)
+    s_min = np.min(ss)
 
     # φs[φs < 0] += 2 * np.pi
 
@@ -292,32 +340,51 @@ def simulate(
         plt.show()
 
     # max friction constraint violation
-    return np.max(ss), t_fail
+    return s_min, t_fail, μ_max
 
 
 def main():
-    s_max, t_fail = simulate(stabilize=True, plot=True)
-    print(f"s = {s_max}, t = {t_fail}")
+    # s_min, t_fail = simulate(stabilize=True, plot=True)
+    # print(f"s = {s_min}, t = {t_fail}")
+
+    print(f"max static acceleration = {MU * np.linalg.norm(GRAVITY)}")
+
+    # TODO should I also test the time intervals - that is, the trajectory
+    # shape? this is probably too complicated
+
+    # TODO also compare stabilize vs non-stabilize
 
     # scale up acceleration
-    # TODO should I also test the time intervals?
-    # for a in [2, 2.5, 3, 3.5, 4, 4.5, 5]:
-    #     s_max, _ = simulate(accel=a, plot=False)
-    #     print(f"a = {a}, max s = {s_max}")
+    # accelerations = [1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5]
+    # print("\nHanging")
+    # for a in accelerations:
+    #     s_min = simulate(accel=a, stabilize=True)[0]
+    #     print(f"a = {a}, s_min = {s_min}")
+    # print("\nStatic")
+    # for a in accelerations:
+    #     s_min = simulate(accel=a, static=True)[0]
+    #     print(f"a = {a}, s_min = {s_min}")
 
     # object height
-    # TODO: with a=2 the static approach is better
-    # for h in [0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4]:
-    #     s_max, _ = simulate(accel=2, obj_height=h, plot=False)
-    #     print(f"h = {h}, max s = {s_max}")
+    # print("\nHanging")
+    # heights = [0.1, 0.15, 0.2, 0.25, 0.3]
+    # for h in heights:
+    #     s_min = simulate(accel=2, obj_height=h, stabilize=True)[0]
+    #     print(f"h = {h}, s_min = {s_min}")
+    # print("\nStatic")
+    # for h in heights:
+    #     s_min = simulate(accel=2, obj_height=h, static=True)[0]
+    #     print(f"h = {h}, s_min = {s_min}")
 
-    # for L in [0.2, 0.3, 0.4, 0.5]:
-    #     s_max, _ = simulate(pendulum_length=L, plot=False)
-    #     print(f"L = {L}, max s = {s_max}")
+    # pendulum lengths
+    print("\nHanging")
+    for L in [0.2, 0.3, 0.4, 0.5, 0.6]:
+        s_min = simulate(pendulum_length=L, stabilize=True)[0]
+        print(f"L = {L}, s_min = {s_min}")
 
     # failure case
-    # s_max, t_fail = simulate(pump_energy=True, plot=False)
-    # print(f"s = {s_max}, t = {t_fail}")
+    # s_min, t_fail, _ = simulate(pump_energy=True)
+    # print(f"s = {s_min}, t = {t_fail}")
 
 
 if __name__ == "__main__":

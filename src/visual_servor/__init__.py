@@ -1,4 +1,5 @@
 from .collision import CollisionEllipse
+from .friction import compute_friction_data
 from .motion import TrapezoidalTrajectory, change_velocity, decelerate
 from .stabilizer import (
     PendulumStabilizer,

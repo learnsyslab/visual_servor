@@ -1,5 +1,6 @@
 import numpy as np
 from qpsolvers import solve_qp
+from lpsolvers import solve_lp
 
 
 class CollisionEllipse:
@@ -50,7 +51,7 @@ class CollisionEllipse:
 
         return np.array(bucketed_points)
 
-    def filter_safe_velocity(self, base_vel_des, points, solver="quadprog"):
+    def filter_safe_velocity(self, base_vel_des, points, lb, ub, solver="quadprog"):
         """Compute a velocity as close as possible to this one that avoids
         collisions.
 
@@ -83,7 +84,15 @@ class CollisionEllipse:
             return base_vel_des
 
         # TODO do I need to use a dedicated class to improve speed?
-        x = solve_qp(P=P, q=-base_vel_des, G=G, h=h, solver=solver)
+        # x = solve_qp(P=P, q=-base_vel_des, G=G, h=h, solver=solver)
+
+        G = np.vstack((G, np.eye(3), -np.eye(3)))
+        if base_vel_des[2] >= 0:
+            h = np.concatenate((h, [ub[0], ub[1], base_vel_des[2]], [-lb[0], -lb[1], 0]))
+        else:
+            h = np.concatenate((h, [ub[0], ub[1], 0], [-lb[0], -lb[1], -base_vel_des[2]]))
+        x = solve_lp(c=-base_vel_des, G=G, h=h, solver="cvxopt")
+
         if x is None:
             print("failed to solve obstacle avoidance QP")
             return np.zeros_like(base_vel_des)

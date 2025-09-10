@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import argparse
+import datetime
 from enum import Enum
 from threading import Lock
+import os
 
 from ultralytics import YOLO
 import cv2
@@ -43,10 +45,12 @@ class VisionNode:
         self.target_lock = Lock()
         self.people = []
 
+        # self.video_writer = cv2.VideoWriter("test.avi", -1, 
+
         self.target_pub = rospy.Publisher("/serving/target", Target, queue_size=1)
-        self.annotated_img_pub = rospy.Publisher(
-            "/serving/annotated_image", Image, queue_size=1
-        )
+        # self.annotated_img_pub = rospy.Publisher(
+        #     "/serving/annotated_image", Image, queue_size=1
+        # )
 
         self.rgb_sub = rospy.Subscriber(
             "/camera/color/image_raw", Image, self._rgb_cb, queue_size=1
@@ -132,8 +136,8 @@ class VisionNode:
             cv2.circle(image, self.target.center, 10, [0, 255, 0], -1)
 
         # publish for logging purposes
-        img_msg = self.bridge.cv2_to_imgmsg(image, encoding="passthrough")
-        self.annotated_img_pub.publish(img_msg)
+        # img_msg = self.bridge.cv2_to_imgmsg(image, encoding="passthrough")
+        # self.annotated_img_pub.publish(img_msg)
 
         return image
 
@@ -158,6 +162,9 @@ def main():
     parser.add_argument(
         "--display", action="store_true", help="Display the annotated image."
     )
+    parser.add_argument(
+        "--save", action="store_true", help="Save the annotated images."
+    )
     args = parser.parse_args()
 
     rospy.init_node("serving_vision_node", disable_signals=True)
@@ -166,15 +173,35 @@ def main():
     rate = rospy.Rate(RATE)
     dt = 1.0 / RATE
 
+    if args.save:
+        stamp = datetime.datetime.now()
+        ymd = stamp.strftime("%Y-%m-%d")
+        hms = stamp.strftime("%H-%M-%S")
+        img_count = 1
+        img_path = f"images/{ymd}_{hms}"
+        os.mkdir(img_path)
+        print(f"saving images to {img_path}")
+
     last_display_time = 0
 
     t0 = rospy.Time.now().to_sec()
+    t_prev = 0
+    t = 0
     while not rospy.is_shutdown():
-        t = rospy.Time.now().to_sec() - t0
+        now = rospy.Time.now()
+        t_prev = t
+        t = now.to_sec() - t0
+        # print(f"dt = {t - t_prev}")
 
         if args.display:  # and t - last_display_time >= DISPLAY_TIME_INTERVAL:
             last_display_time = t
             image = node.annotated_image()
+
+            # save the image
+            if args.save:
+                cv2.imwrite(f"{img_path}/annotated_{img_count}_{now.to_nsec()}.png", image)
+                img_count += 1
+
             cv2.imshow("image", image)
             if cv2.waitKey(1) & 0xFF == ord(" "):
                 break

@@ -19,13 +19,13 @@ ROSBAG_TOPICS = [
         "--regex", "/ur10/(.*)",
         "--regex", "/vicon/(.*)",
         "--regex", "/serving/(.*)",
-        "/camera/color/image_raw",
+        # "/camera/color/image_raw",
 ]
 # fmt: on
 
 
-# LOG_DIR = Path("logs")
-LOG_DIR = Path("/media/adam/Data/PhD/Data/visual_servor")
+LOG_DIR = Path("logs")
+#LOG_DIR = Path("/media/adam/Data/PhD/Data/visual_servor")
 
 
 def main():

@@ -26,7 +26,7 @@ USE_COLLISION_AVOIDANCE = True
 RATE = 25
 
 TARGET_TIME_DELTA_MAX = 3
-TARGET_MIN_DEPTH = 1.5
+TARGET_MIN_DEPTH = 1.2
 
 # lidar offset from base origin
 # TODO: tune this
@@ -36,8 +36,8 @@ LIDAR_OFFSET = np.array([0.25, 0])
 NUM_COLLISION_POINTS = 20
 
 # base motion limits
-BASE_VEL_MAX = np.array([0.3, 0.3, 0.2])
-BASE_ACC_MAX = np.array([0.15, 0.15, 0.25])
+BASE_VEL_MAX = np.array([0.3, 0.3, 0.3])
+BASE_ACC_MAX = np.array([0.3, 0.3, 0.3])
 
 # for home pose and base velocity
 CONVERGENCE_TOL = 1e-2
@@ -71,7 +71,7 @@ class SystemMode(Enum):
 
 class ControlNode:
     def __init__(self):
-        self.collision_ellipse = vs.CollisionEllipse(rx=0.8, ry=0.75, center=[0.25, 0])
+        self.collision_ellipse = vs.CollisionEllipse(rx=0.9, ry=0.6, center=[0.25, 0])
 
         self.target = vs.Person()
         self.target_time_recv = rospy.Time.now().to_sec()
@@ -103,7 +103,12 @@ class ControlNode:
     def filter_safe_velocity(self, base_vel_des):
         if not USE_COLLISION_AVOIDANCE:
             return base_vel_des
-        return self.collision_ellipse.filter_safe_velocity(base_vel_des, self.points)
+        return self.collision_ellipse.filter_safe_velocity(
+            base_vel_des=base_vel_des,
+            points=self.points,
+            lb=-BASE_VEL_MAX,
+            ub=BASE_VEL_MAX,
+        )
 
     def compute_angular_error(self):
         if not self.target.hand_up:
@@ -341,7 +346,8 @@ def main():
                 base_error[2] = mm.wrap_to_pi(base_error[2])
                 vd = Kp * base_error
                 vd = C_bw @ vd  # rotate into the body frame
-                base_vel_des = np.append(vd[:2], 0)  # keep current angle
+                # base_vel_des = np.append(vd[:2], 0)  # keep current angle
+                base_vel_des = vd
             elif mode == SystemMode.FOLLOWING_TARGET:
                 # base motion
                 ang_err = node.compute_angular_error()
@@ -357,7 +363,13 @@ def main():
                 raise ValueError(f"Invalid mode: {mode}")
 
             # collision avoidance
-            base_vel_des = node.filter_safe_velocity(base_vel_des)
+            # if mode == SystemMode.MOVING_HOME:
+            #     print(f"before collision filter = {base_vel_des}")
+            # only filter when actually moving
+            # if mode == SystemMode.MOVING_HOME or mode == SystemMode.FOLLOWING_TARGET:
+            #     base_vel_des = node.filter_safe_velocity(base_vel_des)
+            # if mode == SystemMode.MOVING_HOME:
+            #     print(f"after collision filter = {base_vel_des}")
 
             # accelerate toward desired velocity
             base_cmd_vel = vs.change_velocity(
@@ -365,7 +377,6 @@ def main():
             )
 
             # enforce velocity limits
-            # TODO should I enforce arm velocity limits as well?
             base_cmd_vel = limit_base_vel(base_cmd_vel)
 
             # build the full robot joint command

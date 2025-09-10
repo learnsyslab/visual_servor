@@ -127,6 +127,10 @@ class VisionNode:
                 image[person.mask, :] = 255
             cv2.circle(image, person.center, 5, [0, 0, 255], -1)
 
+        # add center of target as well
+        if self.target.hand_up:
+            cv2.circle(image, self.target.center, 10, [0, 255, 0], -1)
+
         # publish for logging purposes
         img_msg = self.bridge.cv2_to_imgmsg(image, encoding="passthrough")
         self.annotated_img_pub.publish(img_msg)

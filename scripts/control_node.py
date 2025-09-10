@@ -26,6 +26,7 @@ USE_COLLISION_AVOIDANCE = True
 RATE = 25
 
 TARGET_TIME_DELTA_MAX = 3
+TARGET_MIN_DEPTH = 1.5
 
 # lidar offset from base origin
 # TODO: tune this
@@ -194,7 +195,7 @@ def main():
     # load home position
     rospack = rospkg.RosPack()
     pkg_path = rospack.get_path("visual_servor")
-    home = mm.load_home_position(name="default", path=pkg_path + "/config/home.yaml")
+    home = mm.load_home_position(name="demo", path=pkg_path + "/config/home.yaml")
 
     # load pendulum calibration
     r_te_e = np.array(
@@ -217,7 +218,12 @@ def main():
     signal_handler = mm.RobotSignalHandler(robot, args.dry_run)
 
     model = mm.MobileManipulatorKinematics(tool_link_name="ur10_arm_tool0")
-    stabilizer = vs.PendulumStabilizer(model=model, use_integral_term=True)
+    stabilizer = vs.PendulumStabilizer(
+        model=model,
+        accel_max=BASE_ACC_MAX[0],
+        vel_max=BASE_VEL_MAX[0],
+        use_integral_term=True,
+    )
     home_stabilizer_timer = vs.PendulumStabilizerTimer(
         stabilizer=stabilizer,
         min_time=MIN_STABILIZE_TIME,
@@ -242,6 +248,7 @@ def main():
     home_stabilizer_timer.activate()
 
     mode = SystemMode.HOME
+    print(f"mode = {mode}")
     base_cmd_vel = np.zeros(3)
 
     # time at which the current mode started
@@ -274,7 +281,7 @@ def main():
             elif (
                 mode == SystemMode.FOLLOWING_TARGET
                 and node.target.depth_valid
-                and node.target.depth <= 1.5
+                and node.target.depth <= TARGET_MIN_DEPTH
             ):
                 print(f"target depth = {node.target.depth}")
                 mode = SystemMode.SERVING_DECEL
@@ -308,50 +315,44 @@ def main():
             base_vel_des = np.zeros(3)
             arm_cmd_vel = np.zeros(6)
 
+            C_bw = rotz(-q[2])
+
             if mode == SystemMode.HOME:
-                arm_q_err = home[3:] - q[3:]
                 if USE_STABILIZER and home_stabilizer_timer.is_active(mode_t):
-                    arm_cmd_vel = stabilizer.update(q, tray.position, dt)
-                    if arm_cmd_vel is None:
+                    x = stabilizer.update(q, tray.position, dt, base=True)
+                    if x is None:
                         print("failed to solve stabilizer QP")
-                        arm_cmd_vel = np.zeros(6)
-                # TODO
-                # elif np.linalg.norm(arm_q_err) > CONVERGENCE_TOL:
-                #     # move arm back to home after stabilizing
-                #     arm_cmd_vel = Kp * arm_q_err
+                        base_vel_des = np.zeros(3)
+                    else:
+                        base_vel_des = C_bw @ x
             elif mode == SystemMode.SERVING_DECEL:
                 # no logic: just decelerate
                 pass
             elif mode == SystemMode.SERVING:
                 if USE_STABILIZER and serving_stabilizer_timer.is_active(mode_t):
-                    x = stabilizer.update(q, tray.position, dt)
+                    x = stabilizer.update(q, tray.position, dt, base=True)
                     if x is None:
                         print("failed to solve stabilizer QP")
-                        arm_cmd_vel = np.zeros(6)
+                        base_vel_des = np.zeros(3)
                     else:
-                        arm_cmd_vel = x[3:]
+                        base_vel_des = C_bw @ x
             elif mode == SystemMode.MOVING_HOME:
                 base_error = home[:3] - q[:3]
-                # base_error[2] = mm.wrap_to_pi(base_error[2])
+                base_error[2] = mm.wrap_to_pi(base_error[2])
                 vd = Kp * base_error
-
-                # rotate into the body frame
-                C_bw = rotz(-q[2])
-                vd = C_bw @ vd
-
-                # keep current angle
-                base_vel_des = np.append(vd[:2], 0)
-
+                vd = C_bw @ vd  # rotate into the body frame
+                base_vel_des = np.append(vd[:2], 0)  # keep current angle
             elif mode == SystemMode.FOLLOWING_TARGET:
                 # base motion
                 ang_err = node.compute_angular_error()
                 vx = BASE_VEL_MAX[0] * (1 - np.abs(ang_err))
                 base_vel_des = np.array([vx, 0, Kω * ang_err])
 
+                # NOTE no arm motion for now
                 # arm motion
-                height_err = node.compute_height_error()
-                vz_des = Kz * height_err
-                arm_cmd_vel = servo_arm_up(q[3:], vz_des, dt)
+                # height_err = node.compute_height_error()
+                # vz_des = Kz * height_err
+                # arm_cmd_vel = servo_arm_up(q[3:], vz_des, dt)
             else:
                 raise ValueError(f"Invalid mode: {mode}")
 
@@ -368,6 +369,7 @@ def main():
             base_cmd_vel = limit_base_vel(base_cmd_vel)
 
             # build the full robot joint command
+            arm_cmd_vel = np.zeros(6)  # TODO just to be sure for now
             if args.arm_only:
                 base_cmd_vel = np.zeros(3)
             cmd_vel = np.concatenate((base_cmd_vel, arm_cmd_vel))
@@ -375,7 +377,7 @@ def main():
             # send command to the robot
             if args.dry_run:
                 # print(f"q = {q}")
-                # print(f"cmd_vel = {cmd_vel}")
+                print(f"cmd_vel = {cmd_vel}")
                 pass
             else:
                 robot.publish_cmd_vel(cmd_vel, bodyframe=True)

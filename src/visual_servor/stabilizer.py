@@ -187,7 +187,6 @@ class PendulumStabilizer:
         if x is None:
             return None
         arm_cmd_vel = x[:6]
-        print(f"s = {x[6]}")
         return arm_cmd_vel
 
     def update(

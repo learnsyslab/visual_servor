@@ -24,6 +24,10 @@ ROSBAG_TOPICS = [
 # fmt: on
 
 
+# LOG_DIR = Path("logs")
+LOG_DIR = Path("/media/adam/Data/PhD/Data/visual_servor")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", help="Name to be prepended to directory.")
@@ -42,7 +46,10 @@ def main():
     else:
         dir_name = Path(ymd) / hms
 
-    log_dir = Path("logs") / dir_name
+    if not LOG_DIR.is_dir():
+        raise FileNotFoundError(f"Directory {LOG_DIR} does not exist.")
+
+    log_dir = LOG_DIR / dir_name
     log_dir.mkdir(parents=True)
 
     # load configuration and write it out as a single yaml file

@@ -86,12 +86,14 @@ class CollisionEllipse:
         # TODO do I need to use a dedicated class to improve speed?
         # x = solve_qp(P=P, q=-base_vel_des, G=G, h=h, solver=solver)
 
-        G = np.vstack((G, np.eye(3), -np.eye(3)))
-        if base_vel_des[2] >= 0:
-            h = np.concatenate((h, [ub[0], ub[1], base_vel_des[2]], [-lb[0], -lb[1], 0]))
-        else:
-            h = np.concatenate((h, [ub[0], ub[1], 0], [-lb[0], -lb[1], -base_vel_des[2]]))
-        x = solve_lp(c=-base_vel_des, G=G, h=h, solver="cvxopt")
+        # NOTE: did some experimenting with an LP formulation, but so far we
+        # aren't using collision avoidance at all
+        # G = np.vstack((G, np.eye(3), -np.eye(3)))
+        # if base_vel_des[2] >= 0:
+        #     h = np.concatenate((h, [ub[0], ub[1], base_vel_des[2]], [-lb[0], -lb[1], 0]))
+        # else:
+        #     h = np.concatenate((h, [ub[0], ub[1], 0], [-lb[0], -lb[1], -base_vel_des[2]]))
+        # x = solve_lp(c=-base_vel_des, G=G, h=h, solver="cvxopt")
 
         if x is None:
             print("failed to solve obstacle avoidance QP")

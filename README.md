@@ -1,4 +1,4 @@
-# Visual Servor: A Robot Waiter Serving Demo
+# Visual Servor: A Robot Waiter with a Hanging Tray
 
 ## Setup and install
 
@@ -16,6 +16,16 @@ The code for training the custom segmentation network for detecting people with
 their hand up can be found [here](https://github.com/adamheins/yolo_seg_hand_up).
 
 ## Usage
+
+### Simulation
+
+Simulation experiments are run using `scripts/simulation.py`.
+
+### Hardware Experiments
+
+Trials of transporting objects with different motion profiles and trays are
+done using the script `scripts/trial.py`. Record the data to a rosbag by
+running `scripts/record.py` at the same time in a separate terminal.
 
 ### Collision Teleop
 

@@ -19,8 +19,12 @@ import IPython
 
 
 USE_STABILIZER = True
-USE_COLLISION_AVOIDANCE = True
 
+# NOTE: collision avoidance is disabled for now as we could not get it behaving
+# well in the demo
+USE_COLLISION_AVOIDANCE = False
+
+USE_ARM = False
 
 # control rate (Hz)
 RATE = 25
@@ -194,7 +198,6 @@ def main():
     parser.add_argument(
         "--dry-run", action="store_true", help="Don't send commands to the robot."
     )
-    parser.add_argument("--arm-only", action="store_true", help="Only move the arm.")
     args = parser.parse_args()
 
     # load home position
@@ -265,10 +268,8 @@ def main():
         t0 = rospy.Time.now().to_sec()
         t = t0
         while not rospy.is_shutdown():
-            t_prev = t
             now = rospy.Time.now().to_sec()
             t = now - t0
-            # print(f"dt = {t - t_prev}")
 
             # stop if target is too delayed
             if now - node.target_time_recv > TARGET_TIME_DELTA_MAX:
@@ -346,7 +347,6 @@ def main():
                 base_error[2] = mm.wrap_to_pi(base_error[2])
                 vd = Kp * base_error
                 vd = C_bw @ vd  # rotate into the body frame
-                # base_vel_des = np.append(vd[:2], 0)  # keep current angle
                 base_vel_des = vd
             elif mode == SystemMode.FOLLOWING_TARGET:
                 # base motion
@@ -354,22 +354,16 @@ def main():
                 vx = BASE_VEL_MAX[0] * (1 - np.abs(ang_err))
                 base_vel_des = np.array([vx, 0, Kω * ang_err])
 
-                # NOTE no arm motion for now
                 # arm motion
-                # height_err = node.compute_height_error()
-                # vz_des = Kz * height_err
-                # arm_cmd_vel = servo_arm_up(q[3:], vz_des, dt)
+                if USE_ARM:
+                    height_err = node.compute_height_error()
+                    vz_des = Kz * height_err
+                    arm_cmd_vel = servo_arm_up(q[3:], vz_des, dt)
             else:
                 raise ValueError(f"Invalid mode: {mode}")
 
-            # collision avoidance
-            # if mode == SystemMode.MOVING_HOME:
-            #     print(f"before collision filter = {base_vel_des}")
-            # only filter when actually moving
-            # if mode == SystemMode.MOVING_HOME or mode == SystemMode.FOLLOWING_TARGET:
-            #     base_vel_des = node.filter_safe_velocity(base_vel_des)
-            # if mode == SystemMode.MOVING_HOME:
-            #     print(f"after collision filter = {base_vel_des}")
+            if USE_COLLISION_AVOIDANCE:
+                base_vel_des = node.filter_safe_velocity(base_vel_des)
 
             # accelerate toward desired velocity
             base_cmd_vel = vs.change_velocity(
@@ -380,16 +374,11 @@ def main():
             base_cmd_vel = limit_base_vel(base_cmd_vel)
 
             # build the full robot joint command
-            arm_cmd_vel = np.zeros(6)  # TODO just to be sure for now
-            if args.arm_only:
-                base_cmd_vel = np.zeros(3)
             cmd_vel = np.concatenate((base_cmd_vel, arm_cmd_vel))
 
             # send command to the robot
             if args.dry_run:
-                # print(f"q = {q}")
                 print(f"cmd_vel = {cmd_vel}")
-                pass
             else:
                 robot.publish_cmd_vel(cmd_vel, bodyframe=True)
 

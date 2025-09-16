@@ -98,7 +98,7 @@ def main():
             t = now.to_sec() - t0
 
             # base command
-            qd, vd = traj.sample(t)
+            qd, vd, _ = traj.sample(t)
             base_vd = np.array([vd, 0, 0])
             base_qd = np.array([qd, 0, 0]) + q0[:3]
             base_err = base_qd - robot.q[:3]

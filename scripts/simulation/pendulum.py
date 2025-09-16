@@ -242,7 +242,7 @@ def simulate(
 
         # pump energy into the system
         if pump_energy and t > INTERVAL:
-            u = -vs.unit(r_tray_dot) * accel
+            u = -vs.unit(r_tray_dot - r_dot) * accel
 
         if stabilize and t > STABILIZE_START_TIME:
 
@@ -413,7 +413,7 @@ def simulate_parameter_variation():
 
 
 def simulate_pump_energy():
-    data = simulate(pump_energy=True)
+    data = simulate(accel=0.5, pump_energy=True)
     print(f"Pump energy failed at t = {data.t_fail} sec")
 
 
@@ -425,5 +425,5 @@ if __name__ == "__main__":
     # print(f"s = {s_min}, t = {t_fail}")
 
     # simulate_parameter_error()
-    simulate_parameter_variation()
-    # simulate_pump_energy()
+    # simulate_parameter_variation()
+    simulate_pump_energy()

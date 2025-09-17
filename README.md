@@ -5,23 +5,23 @@ their hand up can be found [here](https://github.com/adamheins/yolo_seg_hand_up)
 
 ## Setup and install
 
-This project was built and run on a laptop running Ubuntu 20.04 with ROS
-Noetic. 
-
-Install dependencies:
+This project was built and run on a laptop running Ubuntu 20.04 with ROS1
+Noetic. Clone this repo into your catkin workspace. Then install dependencies:
 ```
-sudo apt install ros-noetic-cv-bridge
-```
+# apt packages
+sudo apt install python3-opencv ros-noetic-cv-bridge
 
-Orbbec Femto Bolt camera.
-
-### YOLO
-
-YOLOv11 from Ultralytics is used for vision. Install with:
-```
-pip install ultralytics
+# pip packages
+cd visual_servor
+pip install -r requirements.txt
 ```
 
+Follow the instructions to setup
+[mobile_manipulation_central](https://github.com/utiasDSL/mobile_manipulation_central)
+and the [ROS1 SDK](https://github.com/orbbec/OrbbecSDK_ROS1) for the Orbbec
+Femto Bolt camera.
+
+Finally, build your catkin workspace.
 
 ## Usage
 

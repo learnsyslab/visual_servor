@@ -20,17 +20,11 @@ from visual_servor.msg import Target
 # control rate (Hz)
 RATE = 25
 
-# only display a new image after this much time has elapsed
-DISPLAY_TIME_INTERVAL = 0.1
-
 # maximum number of detected people
 MAX_PEOPLE = 5
 
 # detection confidence
 DET_CONFIDENCE = 0.5
-
-# weight for exponential filtering of the image detections
-# FILTER_WEIGHT = 0.25
 
 
 class VisionNode:
@@ -45,12 +39,7 @@ class VisionNode:
         self.target_lock = Lock()
         self.people = []
 
-        # self.video_writer = cv2.VideoWriter("test.avi", -1, 
-
         self.target_pub = rospy.Publisher("/serving/target", Target, queue_size=1)
-        # self.annotated_img_pub = rospy.Publisher(
-        #     "/serving/annotated_image", Image, queue_size=1
-        # )
 
         self.rgb_sub = rospy.Subscriber(
             "/camera/color/image_raw", Image, self._rgb_cb, queue_size=1
@@ -135,10 +124,6 @@ class VisionNode:
         if self.target.hand_up:
             cv2.circle(image, self.target.center, 10, [0, 255, 0], -1)
 
-        # publish for logging purposes
-        # img_msg = self.bridge.cv2_to_imgmsg(image, encoding="passthrough")
-        # self.annotated_img_pub.publish(img_msg)
-
         return image
 
     def publish_target(self):
@@ -185,15 +170,11 @@ def main():
     last_display_time = 0
 
     t0 = rospy.Time.now().to_sec()
-    t_prev = 0
-    t = 0
     while not rospy.is_shutdown():
         now = rospy.Time.now()
-        t_prev = t
         t = now.to_sec() - t0
-        # print(f"dt = {t - t_prev}")
 
-        if args.display:  # and t - last_display_time >= DISPLAY_TIME_INTERVAL:
+        if args.display:
             last_display_time = t
             image = node.annotated_image()
 

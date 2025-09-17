@@ -1,0 +1,12 @@
+# the listed versions are known to work, but you should be able to use newer
+# versions in many cases
+cvxpy>=1.4.4
+lpsolvers>=2.1.0
+matplotlib>=3.7.5
+numpy>=1.24.4
+PyYAML>=6.0.2
+qpsolvers>=4.8.1
+rigeo>=0.2.0
+scipy>=1.16.2
+spatialmath_python>=1.1.14
+ultralytics>=8.3.82

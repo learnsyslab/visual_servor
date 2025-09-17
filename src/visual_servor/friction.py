@@ -2,8 +2,9 @@ from dataclasses import dataclass
 
 import numpy as np
 import rosbag
+from spatialmath.base import q2r
 from mobile_manipulation_central import ros_utils
-import upright_core as core
+
 
 @dataclass
 class FrictionData:
@@ -13,6 +14,11 @@ class FrictionData:
     slips: np.ndarray
     mu: float
     slip_time: float
+
+
+def quat_to_rot(q):
+    """Convert quaternion q to rotation matrix."""
+    return q2r(q, order="xyzs")
 
 
 def compute_friction_data(
@@ -44,8 +50,8 @@ def compute_friction_data(
     n = ts.shape[0]
     angles = np.zeros(n)
     for i in range(n):
-        q_we = tray_poses[i, 3:]
-        normal = core.math.quat_rotate(q_we, z)
+        C_we = quat_to_rot(tray_poses[i, 3:])
+        normal = C_we @ z
         angles[i] = np.arccos(z @ normal)
 
     # corresponding coefficients of friction
@@ -54,7 +60,7 @@ def compute_friction_data(
     # compute offset of object from tray in tray's local frame
     r_locals = np.zeros((n, 3))
     for i in range(n):
-        C_we = core.math.quat_to_rot(tray_poses[i, 3:])
+        C_we = quat_to_rot(tray_poses[i, 3:])
         r_world = obj_poses[i, :3] - tray_poses[i, :3]
         r_locals[i, :] = C_we.T @ r_world
 

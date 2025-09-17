@@ -1,9 +1,19 @@
 # Visual Servor: A Robot Waiter with a Hanging Tray
 
+The code for training the custom segmentation network for detecting people with
+their hand up can be found [here](https://github.com/adamheins/yolo_seg_hand_up).
+
 ## Setup and install
 
-This project was built and run on a laptop running Ubuntu 20.04 with the Orbbec
-Femto Bolt camera.
+This project was built and run on a laptop running Ubuntu 20.04 with ROS
+Noetic. 
+
+Install dependencies:
+```
+sudo apt install ros-noetic-cv-bridge
+```
+
+Orbbec Femto Bolt camera.
 
 ### YOLO
 
@@ -12,8 +22,6 @@ YOLOv11 from Ultralytics is used for vision. Install with:
 pip install ultralytics
 ```
 
-The code for training the custom segmentation network for detecting people with
-their hand up can be found [here](https://github.com/adamheins/yolo_seg_hand_up).
 
 ## Usage
 

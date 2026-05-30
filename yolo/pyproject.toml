@@ -1,0 +1,11 @@
+[project]
+name = "yolo-seg-hand-up"
+version = "0.1.0"
+description = "Learn to segment people with their hand up."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "matplotlib>=3.9.4",
+    "pycocotools>=2.0.8",
+    "ultralytics>=8.3.101",
+]

@@ -1,0 +1,17 @@
+#!/bin/bash
+
+#SBATCH --job-name=visual_servor_yolo
+#SBATCH --gres=gpu:1
+#SBATCH --qos=normal
+#SBATCH --time=16:00:00
+#SBATCH -c 4
+#SBATCH --mem=16G
+#SBATCH --open-mode=append
+
+module purge
+module load python/3.10.12
+module load pytorch2.1-cuda11.8-python3.10
+
+source .venv/bin/activate
+
+python train.py --checkpoint runs

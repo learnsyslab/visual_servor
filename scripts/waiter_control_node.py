@@ -1,3 +1,4 @@
+"""Controller node for the interactive robot waiter demo."""
 #!/usr/bin/env python3
 from enum import Enum
 import argparse
@@ -33,7 +34,6 @@ TARGET_TIME_DELTA_MAX = 3
 TARGET_MIN_DEPTH = 1.2
 
 # lidar offset from base origin
-# TODO: tune this
 LIDAR_OFFSET = np.array([0.25, 0])
 
 # number of points of nearby obstacles to use for collision avoidance

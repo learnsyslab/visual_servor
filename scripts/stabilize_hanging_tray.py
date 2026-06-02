@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stabilize spatial pendulum using LQR."""
+"""Standalone script to stabilize hanging tray using LQR."""
 import argparse
 from pathlib import Path
 

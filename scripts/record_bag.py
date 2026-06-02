@@ -1,3 +1,4 @@
+"""Record a ROS bag."""
 #!/usr/bin/env python3
 import argparse
 import datetime
@@ -19,7 +20,6 @@ ROSBAG_TOPICS = [
         "--regex", "/ur10/(.*)",
         "--regex", "/vicon/(.*)",
         "--regex", "/serving/(.*)",
-        # "/camera/color/image_raw",
 ]
 # fmt: on
 

@@ -1,4 +1,6 @@
+"""Run a set of simulation experiments."""
 #!/usr/bin/env python3
+import argparse
 from pathlib import Path
 
 import cvxpy as cp
@@ -142,9 +144,6 @@ def simulate(
         ]
     )
 
-    # friction matrix: F @ f <= 0 means f inside friction cone
-    # F = np.array([[0, 0, -1], [1, 1, -MU], [1, -1, -MU], [-1, -1, -MU], [-1, 1, -MU]])
-
     # initial state
     r = np.zeros(3)
     C = np.eye(3)  # this is C_wb
@@ -181,9 +180,7 @@ def simulate(
     constraints = [rem_o + wc == M_o @ ξdot, rem_p - wc + wt == M_p @ ξdot]
 
     # friction constraints
-    # constraints.extend([F @ f <= s for f in fc])
     constraints.extend([MU * f[2] - cp.norm(f[:2]) >= s for f in fc])
-    # constraints.extend([f[2] >= 0 for f in fc])
 
     if not static:
         # tensile forces must be positive
@@ -196,8 +193,6 @@ def simulate(
     problem = cp.Problem(objective, constraints)
 
     # LQR
-    # TODO would this actually be fine if the correct offset was used? I think
-    # we can explain this away in the paper
     lqr_gain = vs.pendulum_lqr_gain(
         length=pendulum_length, use_integral_term=use_integral_term
     )
@@ -229,7 +224,7 @@ def simulate(
         # desired values
         rxd, vxd, axd = traj.sample(t)
         rd = np.array([rxd, 0, 0])
-        r_dot_d = np.array([vxd, 0, 0])  # TODO naming is not great
+        r_dot_d = np.array([vxd, 0, 0])
         ad = np.array([axd, 0, 0])
 
         # basic feedback control
@@ -245,12 +240,6 @@ def simulate(
             u = -vs.unit(r_tray_dot - r_dot) * accel
 
         if stabilize and t > STABILIZE_START_TIME:
-
-            # TODO also add u check here
-            # if np.linalg.norm(ξ.vec) < 0.01:
-            #     print(f"done stabilizing at t = {t}")
-            #     break
-
             # all quantities in global frame
             Δr = r - rd
             if use_integral_term:
@@ -420,10 +409,17 @@ def simulate_pump_energy():
 if __name__ == "__main__":
     np.set_printoptions(precision=4, suppress=True)
 
-    # print(f"max static acceleration = {MU * np.linalg.norm(GRAVITY)}")
-    # s_min, t_fail = simulate(stabilize=True, plot=True)
-    # print(f"s = {s_min}, t = {t_fail}")
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "experiment",
+        choices=["param_error", "param_variation", "pump_energy"],
+        help="The experiment to run.",
+    )
+    args = parser.parse_args()
 
-    # simulate_parameter_error()
-    # simulate_parameter_variation()
-    simulate_pump_energy()
+    if args.experiment == "param_error":
+        simulate_parameter_error()
+    elif args.experiment == "param_variation":
+        simulate_parameter_variation()
+    elif args.experiment == "pump_energy":
+        simulate_pump_energy()

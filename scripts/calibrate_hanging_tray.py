@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Compute the position of the hanging tray relative to the robot's end
+effector."""
 import numpy as np
 import rospy
 import yaml

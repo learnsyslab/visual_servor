@@ -1,16 +1,30 @@
-# Visual Servor: A Robot Waiter with a Hanging Tray
+# Visual Servor
 
-The code for training the custom segmentation network for detecting people with
-their hand up can be found [here](https://github.com/adamheins/yolo_seg_hand_up).
+This repository is contains the code for the experiments shown in the paper
+"Robotic Nonprehensile Transportation with a Hanging Tray", to appear in the
+IEEE/ASME International Conference on Advanced Intelligent Mechatronics, 2026.
+
+## Model training
+
+The YOLO model used to segment people with a raised hand can be trained using
+the self-contained code in the [yolo](./yolo) directory.
 
 ## Setup and install
 
 This project was built and run on a laptop running Ubuntu 20.04 with ROS1
-Noetic. Clone this repo into your catkin workspace. Follow the instructions to
-setup
+Noetic. It controls a Ridgeback mobile base using a Femto Bolt camera and a
+Vicon motion capture system.
+
+Follow the instructions to setup
 [mobile_manipulation_central](https://github.com/utiasDSL/mobile_manipulation_central)
 and the [ROS1 SDK](https://github.com/orbbec/OrbbecSDK_ROS1) for the Orbbec
 Femto Bolt camera.
+
+Clone the repository into your catkin workspace:
+```
+cd catkin_ws/src
+git clone https://github.com/learnsyslab/visual_servor
+```
 
 Install additional dependencies:
 ```
@@ -26,28 +40,36 @@ Finally, build your catkin workspace.
 
 ## Usage
 
-### Simulation
+### Simulation Experiments
 
-Simulation experiments are run using `scripts/simulation.py`.
+Simulation experiments are run using `scripts/run_simulation_experiment.py`.
 
 ### Hardware Experiments
 
+You first need to measure the rest position of the hanging tray relative to the
+robot's end effector. Use the script `scripts/calibrate_hanging_tray.py` and
+save the result in the `config` directory.
+
 Trials of transporting objects with different motion profiles and trays are
-done using the script `scripts/trial.py`. Record the data to a rosbag by
-running `scripts/record.py` at the same time in a separate terminal.
+done using the script `scripts/run_hardware_experiment.py`. Record the data to
+a rosbag by running `scripts/record_bag.py` at the same time in a separate
+terminal.
 
-### Collision Teleop
+To calculate the friction coefficient for different tray and object
+combinations, record a bag during which you slowly manually tilt the tray with
+the object on it until the object starts to slide. Then use
+`scripts/compute_mu_from_vicon_data.py` to calculate the friction coefficient
+corresponding to the tilt angle. Note that friction coefficients are not
+required for control.
 
-Collision avoidance can be tested independently. In one terminal, run
-`rosrun visual_servor collision_teleop.py`. In another terminal, run `roslaunch
-visual_servor keyboard_teleop_base.launch` to control the robot's motion with the
-keyboard.
-
-### Serving Demo
+### Interactive Robot Waiter Demo
 
 In three terminals, respectively run:
 
 * `roslaunch visual_servor visual_servor.launch`
-* `rosrun visual_servor vision_node.py --display`
-* `rosrun visual_servor control_node.py`
+* `rosrun visual_servor waiter_vision_node.py --display`
+* `rosrun visual_servor waiter_control_node.py`
 
+## License
+
+MIT. See the LICENSE file.

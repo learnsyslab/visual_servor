@@ -1,3 +1,4 @@
+"""Vision processing node for the interactive robot waiter demo."""
 #!/usr/bin/env python3
 import argparse
 import datetime

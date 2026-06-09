@@ -19,18 +19,33 @@ on those labels.
 
 ## Usage
 
-You need to have the COCO dataset. Update the `path` variable in the
-`visual_servor_yolo.yaml` config file to point to its location on disk. Then:
+You need to have the COCO dataset, in the following layout:
+```
+coco/
+  annotations/  # COCO annotations
+  images/
+    train/  # COCO train2017 images
+    val/    # COCO val2017 images
+  labels/  # empty directory where we'll put the YOLO labels
+```
+
+Update the `path` variable in the `visual_servor_yolo.yaml` config file to
+point to its location on disk.
+
+Then:
 ```
 # setup virtual environment
-uv sync
+python -m venv .venv
 source .venv/bin/activate
+pip install .
 
 # convert COCO dataset annotations to YOLO labels
-python annotations_to_labels.py <path/to/annotations/JSON/file>
+# assume COCO dataset is located at `~/coco`
+python scripts/annotations_to_labels.py ~/coco/annotations/person_keypoints_train2017.json -o ~/coco/labels/train
+python scripts/annotations_to_labels.py ~/coco/annotations/person_keypoints_val2017.json -o ~/coco/labels/val
 
 # train the model:
-python train.py --checkpoint <path/to/checkpoint>
+python scripts/train.py --checkpoint checkpoint
 # or if using slurm (you'll probably need to change some parameters in the slrm
 # file):
 sbatch launch_job.slrm

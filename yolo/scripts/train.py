@@ -23,11 +23,11 @@ def main():
         model = YOLO(model_path)
         model.train(resume=True)
     else:
-        # load pretrained model
+        # otherwise load pretrained model and start from there
         print("Starting new training...")
         model = YOLO("models/yolo11n-seg.pt")
         results = model.train(
-            data="visual_servor_yolo.yaml",
+            data="../visual_servor_yolo.yaml",
             epochs=NUM_EPOCHS,
             imgsz=IMAGE_SIZE,
             project=args.checkpoint,

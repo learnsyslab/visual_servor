@@ -1,3 +1,4 @@
+"""Run a trial of the hardware experiments."""
 #!/usr/bin/env python3
 import argparse
 

@@ -45,7 +45,7 @@ python scripts/annotations_to_labels.py ~/coco/annotations/person_keypoints_trai
 python scripts/annotations_to_labels.py ~/coco/annotations/person_keypoints_val2017.json -o ~/coco/labels/val
 
 # train the model:
-python scripts/train.py --checkpoint checkpoint
+python scripts/train.py --checkpoint runs
 # or if using slurm (you'll probably need to change some parameters in the slrm
 # file):
 sbatch launch_job.slrm

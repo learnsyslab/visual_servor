@@ -1,8 +1,9 @@
 # Visual Servor
 
 This repository is contains the code for the experiments shown in the paper
-"Robotic Nonprehensile Transportation with a Hanging Tray", to appear in the
-IEEE/ASME International Conference on Advanced Intelligent Mechatronics, 2026.
+[Robotic Nonprehensile Transportation with a Hanging Tray](https://arxiv.org/abs/2606.10039),
+to appear in the Proceedings of the IEEE/ASME International Conference on
+Advanced Intelligent Mechatronics, 2026.
 
 ## Model training
 

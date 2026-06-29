@@ -3,7 +3,8 @@
 This repository is contains the code for the experiments shown in the paper
 [Robotic Nonprehensile Object Transportation with a Hanging Tray](https://arxiv.org/abs/2606.10039),
 to appear in the Proceedings of the IEEE/ASME International Conference on
-Advanced Intelligent Mechatronics, 2026.
+Advanced Intelligent Mechatronics, 2026. A video of the experiments can be
+found [here](https://tiny.cc/visual-servor).
 
 ## Model training
 
